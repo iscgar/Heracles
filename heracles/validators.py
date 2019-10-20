@@ -1,38 +1,40 @@
 import abc
 import struct
-import typing
+from typing import Any, Callable, Iterable, Union as TypeUnion
+
+from .utils import get_type_name
 
 
-class Validator(object):
+class Validator(abc.ABC):
     @abc.abstractmethod
-    def __call__(self, value: typing.Any) -> None:
+    def __call__(self, value: Any) -> None:
         pass
 
 
 class TrueValidator(Validator):
-    def __call__(self, value: typing.Any) -> None:
+    def __call__(self, value: Any) -> None:
         pass
 
 
 class FalseValidator(Validator):
-    def __call__(self, value: typing.Any) -> None:
+    def __call__(self, value: Any) -> None:
         raise ValueError('FalseValidator')
 
 
 class PredicateValidator(Validator):
-    def __init__(self, pred: typing.Callable[[typing.Any], bool]):
+    def __init__(self, pred: Callable[[Any], bool]):
         self.pred = pred
 
-    def __call__(self, value: typing.Any) -> None:
+    def __call__(self, value: Any) -> None:
         if not self.pred(value):
-            raise ValueError(f'Invalid value {value}')
+            raise ValueError(f'Calling {get_type_name(self.pred)}({value}) returned False')
 
 
 class ExactValueValidator(Validator):
-    def __init__(self, expected_value: typing.Any):
+    def __init__(self, expected_value: Any):
         self.expected_value = expected_value
 
-    def __call__(self, value: typing.Any) -> None:
+    def __call__(self, value: Any) -> None:
         if value != self.expected_value:
             raise ValueError(f'Expected `{self.expected_value}`, got `{value}`')
 
@@ -56,7 +58,7 @@ class FloatValidator(Validator):
             raise ValueError(f'Unsupported float size {bit_size}')
         self.fmt = '=f' if bit_size == 32 else '=d'
 
-    def __call__(self, value: typing.Union[int, float]) -> None:
+    def __call__(self, value: TypeUnion[int, float]) -> None:
         try:
             struct.pack(self.fmt, value)
         except struct.error as e:
@@ -71,9 +73,9 @@ class BitSizeValidator(IntRangeValidator):
 
 
 class SetValidator(Validator):
-    def __init__(self, items: typing.Iterable[typing.Any]):
+    def __init__(self, items: Iterable[Any]):
         self.items = set(items)
 
-    def __call__(self, value: typing.Any) -> None:
+    def __call__(self, value: Any) -> None:
         if value not in self.items:
             raise ValueError(f'{value} is not part of the set {self.items}')

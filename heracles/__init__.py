@@ -21,8 +21,9 @@ __package__ = __name__
 __title__ = 'heracles'
 __version__ = '0.0.1'
 
-__summary__ = ('heracles is a package which provides simple binary serialization'
-               ' and deserialization to Python developers for easy interop with C.')
+__summary__ = ('heracles is a package which provides simple structured binary'
+               ' serialization and deserialization to Python developers for'
+               ' easy interop with C.')
 __uri__ = 'https://github.com/iscgar/heracles'
 
 __author__ = 'Isaac Garzón'
