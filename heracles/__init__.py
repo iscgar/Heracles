@@ -12,9 +12,6 @@ from .enum import *
 # Validators
 from .validators import *
 
-# Aliases
-VLA = VariableArray
-
 # Info
 __package__ = __name__
 

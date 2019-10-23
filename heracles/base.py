@@ -71,12 +71,9 @@ class SerializerMeta(type):
 
     @staticmethod
     def create_array(size: TypeUnion[int, slice], underlying: Type['Serializer']):
-        from .vectors import Array, VariableArray
-        if isinstance(size, int):
+        from .vectors import Array
+        if isinstance(size, (int, slice)):
             return Array(size, underlying)
-        elif isinstance(size, slice):
-            assert size.step is None, 'Cannot supply step as array size'
-            return VariableArray(size.start, size.stop, underlying)
         else:
             raise ValueError(f'Expected an int or a slice, got {get_type_name(size)}')
 
@@ -115,8 +112,6 @@ class Serializer(metaclass=SerializerMeta):
 
     @classmethod
     def _heracles_bytesize_(cls, value: Optional[Any] = None) -> int:
-        if cls._heracles_vst_():
-            return 0
         return cls._heracles_metadata_().size
 
     def _get_serializer_value(self, value: Optional[Any] = None):
