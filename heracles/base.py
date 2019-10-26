@@ -131,8 +131,9 @@ class Serializer(metaclass=SerializerMeta):
         raise NotImplementedError()
 
     def _heracles_validate_(self, value: Optional[Any] = None) -> Any:
+        value = self._get_serializer_value(value)
         if self._heracles_validator is not None:
-            self._heracles_validator(self._get_serializer_value(value))
+            self._heracles_validator(value)
         return value
 
     def _heracles_render_(self, value: Optional[Any] = None) -> str:

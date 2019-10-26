@@ -2,10 +2,6 @@ import inspect
 from typing import Any, Iterable, Type, Union as TypeUnion
 
 
-def is_strict_subclass(typ: Type, classinfo: Type) -> bool:
-    return typ is not classinfo and issubclass(typ, classinfo)
-
-
 def get_as_type(t: TypeUnion[Type, Any]) -> Type:
     return t if inspect.isclass(t) else type(t)
 

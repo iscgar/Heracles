@@ -4,7 +4,7 @@ from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence,
 
 from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict
 from .scalars import *
-from ._utils import first, last, is_strict_subclass, get_type_name, get_as_type
+from ._utils import first, last, get_type_name, get_as_type
 
 __all__ = ['Enum', 'Literal']
 
@@ -18,13 +18,9 @@ class EnumMeta(SerializerMeta):
         if classdict.get('__module__') != __name__ and not classdict.get(SerializerMeta.METAATTR):
             enum_base = None
 
-            for base in bases:
-                if not is_strict_subclass(base, Serializer):
-                    continue
-
+            for base in (b for b in bases if issubclass(b, Serializer)):
                 if getattr(sys.modules[__name__], get_type_name(base), None) != base:
-                    raise TypeError('enum classes can only derive directly from Enum')
-
+                    raise TypeError('enum classes can only inherit directly from Enum')
                 enum_base = base
 
             classdict.update({
@@ -44,7 +40,6 @@ class EnumMeta(SerializerMeta):
             if value is None or issubclass(get_as_type(value), Literal):
                 members = classdict.members
                 return 0 if not members else last(members.values()) + 1
-
             return value
 
         return MetaDict(name, on_literal_add)
@@ -52,7 +47,7 @@ class EnumMeta(SerializerMeta):
     def __call__(cls, *args, **kwargs):
         if cls is Enum:
             if not kwargs:
-                if len(args) == 1 and is_strict_subclass(args[0], Scalar):
+                if len(args) == 1 and issubclass(args[0], Scalar):
                     underlying = args[0]
                     VALID_UNDERLYING_TYPES = (
                         u8, u16, u32, u64, i8, i16, i32, i64,
@@ -71,7 +66,6 @@ class EnumMeta(SerializerMeta):
                             SerializerMeta.METAATTR: SerializerMetadata(serializer._heracles_bytesize_()),
                             'serializer': serializer})
                         setattr(sys.modules[__name__], name, typ)
-                    
                     return typ
 
         return super().__call__(*args, **kwargs)
@@ -97,7 +91,6 @@ class Enum(Serializer, metaclass=EnumMeta):
                 value = first(self.literals().values())
             else:
                 value = 0
-
         super().__init__(value, *args, **kwargs)
 
     @classmethod

@@ -28,9 +28,10 @@ class Scalar(Serializer):
         return super()._heracles_validate_(value)
 
     def serialize_value(self, value: TypeUnion['Scalar', int, float], settings: Optional[Dict[str, Any]] = None) -> bytes:
-        value = self._get_serializer_value(value)
         if value_or_default(settings, {}).get('validate_on_serialize'):
-            self._heracles_validate_(value)
+            value = self._heracles_validate_(value)
+        else:
+            value = self._get_serializer_value(value)
         return struct.pack(self._heracles_metadata_().fmt, value)
 
     def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> TypeUnion[int, float, bytes]:
@@ -49,6 +50,7 @@ def _u8_type(name: str, endianness: Endianness) -> Type[Scalar]:
     typ = _scalar_type(name, 1, endianness, 'B', IntRangeValidator(0, 255))
     __class__ = typ
 
+    # TODO: This conversion is completely broken when interacting with the rest of the library
     def convert(value):
         # Silently convert from byte string to value for u8*
         if isinstance(value, bytes) and len(value) == typ._heracles_bytesize_():
@@ -63,10 +65,17 @@ def _u8_type(name: str, endianness: Endianness) -> Type[Scalar]:
 
     def serialize_value(self, value: TypeUnion[typ, int, bytes], settings: Dict[str, Any] = None) -> bytes:
         return super(typ, self).serialize_value(convert(value), settings)
+    
+    # def _get_serializer_value(self, value=None):
+    #     value = super(typ, self)._get_serializer_value(value)
+    #     if isinstance(self.value, bytes) and isinstance(value, int):
+    #         value = bytes((value,))
+    #     return value
 
     typ.__init__ = init
     typ._heracles_validate_ = _heracles_validate_
     typ.serialize_value = serialize_value
+    # typ._get_serializer_value = _get_serializer_value
     return typ
 
 
@@ -119,20 +128,20 @@ f64_le = _scalar_type('f64_le', 8, Endianness.little, 'd', FloatValidator(64))
 
 class char(_scalar_type('char', 1, Endianness.native, 'c', AsciiCharValidator())):
     def __init__(self, value: TypeUnion[str, bytes] = '\x00', *args, **kwargs):
-        super(char, self).__init__(value, *args, **kwargs)
+        super().__init__(value, *args, **kwargs)
 
     def serialize_value(self, value: TypeUnion[str, bytes], settings: Optional[Dict[str, Any]] = None) -> bytes:
         if isinstance(value, str):
             value = value.encode('ascii')
-        return super(char, self).serialize_value(value, settings)
+        return super().serialize_value(value, settings)
 
     def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> str:
-        return super(char, self).deserialize(raw_data, settings).decode('ascii')
+        return super().deserialize(raw_data, settings).decode('ascii')
 
-    def __int__(self):
+    def __int__(self) -> int:
         return ord(self.value)
 
-    def __float__(self):
+    def __float__(self) -> float:
         return float(int(self))
 
 
