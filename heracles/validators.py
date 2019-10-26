@@ -2,7 +2,7 @@ import abc
 import struct
 from typing import Any, Callable, Iterable, Union as TypeUnion
 
-from .utils import get_type_name
+from ._utils import get_type_name
 
 
 class Validator(abc.ABC):
@@ -23,6 +23,8 @@ class FalseValidator(Validator):
 
 class PredicateValidator(Validator):
     def __init__(self, pred: Callable[[Any], bool]):
+        if not hasattr(pred, '__call__'):
+            raise TypeError(f'{get_type_name(pred)} is not callable')
         self.pred = pred
 
     def __call__(self, value: Any) -> None:
@@ -63,6 +65,14 @@ class FloatValidator(Validator):
             struct.pack(self.fmt, value)
         except struct.error as e:
             raise ValueError(e.message)
+
+
+class AsciiCharValidator(Validator):
+    def __call__(self, value):
+        if isinstance(value, str):
+            value = value.encode('ascii')
+        if not isinstance(value, bytes) or len(value) != 1:
+            raise ValueError(f'Expected ASCII str of length 1, got {value}')
 
 
 class BitSizeValidator(IntRangeValidator):

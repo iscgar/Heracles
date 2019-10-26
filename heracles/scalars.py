@@ -2,11 +2,12 @@ import struct
 from typing import Any, ByteString, Dict, Optional, Type, Union as TypeUnion
 
 from .base import Endianness, Serializer, SerializerMeta, SerializerMetadata
-from .validators import Validator, PredicateValidator, IntRangeValidator, FloatValidator
-from .utils import value_or_default
+from .validators import Validator, IntRangeValidator, FloatValidator, AsciiCharValidator
+from ._utils import value_or_default
 
 __all__ = [
-    'Scalar', 'char', 'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64',
+    'Scalar', 'PadByte', 'char', 'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64',
+    'uint8_t', 'int8_t', 'uint16_t', 'int16_t', 'uint32_t', 'int32_t', 'uint64_t', 'int64_t',
     'u8_le', 'i8_le', 'u16_le', 'i16_le', 'u32_le', 'i32_le', 'u64_le', 'i64_le', 'f32_le', 'f64_le',
     'u8_be', 'i8_be', 'u16_be', 'i16_be', 'u32_be', 'i32_be', 'u64_be', 'i64_be', 'f32_be', 'f64_be']
 
@@ -32,7 +33,7 @@ class Scalar(Serializer):
             self._heracles_validate_(value)
         return struct.pack(self._heracles_metadata_().fmt, value)
 
-    def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> Any:
+    def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> TypeUnion[int, float, bytes]:
         value = struct.unpack(self._heracles_metadata_().fmt, raw_data)[0]
         self._heracles_validate_(value)
         return value
@@ -42,38 +43,6 @@ def _scalar_type(name: str, size: int, endianness: Endianness, fmt: str, validat
     return type(name, (Scalar,), {
         SerializerMeta.METAATTR: SerializerMetadata(
             size, fmt=f'{endianness.value}{fmt}', validator=validator)})
-
-
-def _char_type() -> Type[Scalar]:
-    char = _scalar_type('char', 1, Endianness.native, 'c', PredicateValidator(
-        lambda v: isinstance(v, (str, bytes)) and len(v) == 1 and 0 <= ord(v) < 256))
-    __class__ = char
-
-    def convert_to_chr(value: TypeUnion[str, bytes]) -> str:
-        if isinstance(value, bytes):
-            value = value.decode('ascii')
-        return value
-
-    def convert_from_chr(value: TypeUnion[str, bytes]) -> bytes:
-        if isinstance(value, str):
-            value = value.encode('ascii')
-        return value
-
-    def init(self, value: TypeUnion[str, bytes] = '\x00', *args, **kwargs):
-        super(char, self).__init__(value, *args, **kwargs)
-
-    def serialize_value(self, value: TypeUnion[str, bytes], settings: Optional[Dict[str, Any]] = None) -> bytes:
-        return super(char, self).serialize_value(convert_from_chr(value), settings)
-
-    def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> str:
-        return convert_to_chr(super(char, self).deserialize(raw_data, settings))
-
-    char.__init__ = init
-    char.__int__ = lambda self: ord(self.value)
-    char.__float__ = lambda self: float(int(self.value))
-    char.serialize_value = serialize_value
-    char.deserialize = deserialize
-    return char
 
 
 def _u8_type(name: str, endianness: Endianness) -> Type[Scalar]:
@@ -101,8 +70,7 @@ def _u8_type(name: str, endianness: Endianness) -> Type[Scalar]:
     return typ
 
 
-char = _char_type()
-
+# Native scalar types
 u8 = _u8_type('u8', Endianness.native)
 i8 = _scalar_type('i8', 1, Endianness.native, 'b', IntRangeValidator(-128, 127))
 u16 = _scalar_type('u16', 2, Endianness.native, 'H', IntRangeValidator(0, 65535))
@@ -114,6 +82,17 @@ i64 = _scalar_type('i64', 8, Endianness.native, 'q', IntRangeValidator(-92233720
 f32 = _scalar_type('f32', 4, Endianness.native, 'f', FloatValidator(32))
 f64 = _scalar_type('f64', 8, Endianness.native, 'd', FloatValidator(64))
 
+# stdint.h aliases of native scalar types
+uint8_t = u8
+int8_t = i8
+uint16_t = u16
+int16_t = i16
+uint32_t = u32
+int32_t = i32
+uint64_t = u64
+int64_t = i64
+
+# Big endian scalar types
 u8_be = _u8_type('u8_be', Endianness.big)
 i8_be = _scalar_type('i8_be', 1, Endianness.big, 'b', IntRangeValidator(-128, 127))
 u16_be = _scalar_type('u16_be', 2, Endianness.big, 'H', IntRangeValidator(0, 65535))
@@ -125,6 +104,7 @@ i64_be = _scalar_type('i64_be', 8, Endianness.big, 'q', IntRangeValidator(-92233
 f32_be = _scalar_type('f32_be', 4, Endianness.big, 'f', FloatValidator(32))
 f64_be = _scalar_type('f64_be', 8, Endianness.big, 'd', FloatValidator(64))
 
+# Little endian scalar types
 u8_le = _u8_type('u8_le', Endianness.little)
 i8_le = _scalar_type('i8_le', 1, Endianness.little, 'b', IntRangeValidator(-128, 127))
 u16_le = _scalar_type('u16_le', 2, Endianness.little, 'H', IntRangeValidator(0, 65535))
@@ -135,3 +115,37 @@ u64_le = _scalar_type('u64_le', 8, Endianness.little, 'Q', IntRangeValidator(0, 
 i64_le = _scalar_type('i64_le', 8, Endianness.little, 'q', IntRangeValidator(-9223372036854775808, 9223372036854775807))
 f32_le = _scalar_type('f32_le', 4, Endianness.little, 'f', FloatValidator(32))
 f64_le = _scalar_type('f64_le', 8, Endianness.little, 'd', FloatValidator(64))
+
+
+class char(_scalar_type('char', 1, Endianness.native, 'c', AsciiCharValidator())):
+    def __init__(self, value: TypeUnion[str, bytes] = '\x00', *args, **kwargs):
+        super(char, self).__init__(value, *args, **kwargs)
+
+    def serialize_value(self, value: TypeUnion[str, bytes], settings: Optional[Dict[str, Any]] = None) -> bytes:
+        if isinstance(value, str):
+            value = value.encode('ascii')
+        return super(char, self).serialize_value(value, settings)
+
+    def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> str:
+        return super(char, self).deserialize(raw_data, settings).decode('ascii')
+
+    def __int__(self):
+        return ord(self.value)
+
+    def __float__(self):
+        return float(int(self))
+
+
+class PadByte(u8):
+    @classmethod
+    def _heracles_hidden_(cls) -> bool:
+        return True
+
+    def _heracles_validate_(self, value: Optional[TypeUnion[int, bytes]] = None) -> int:
+        value = super()._heracles_validate_(value)
+        if value != self.value:
+            raise ValueError(f'Expected padding value {self.value}, got {value}')
+        return value
+
+    def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> bytes:
+        return super().deserialize(raw_data, settings) and b''

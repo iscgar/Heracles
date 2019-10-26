@@ -1,10 +1,10 @@
 import inspect
 import itertools
 import collections
-from typing import Any, ByteString, Dict, KeysView, Mapping, Optional, Sequence, Type
+from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type
 
 from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict
-from .utils import last, is_strict_subclass, get_type_name, get_as_type, get_as_value
+from ._utils import last, is_strict_subclass, get_type_name, get_as_type, get_as_value, is_class_in_class_body, instanceoverride
 
 
 __all__ = ['Struct', 'BaseVstError', 'FieldVstError', 'UnknownFieldsError']
@@ -70,26 +70,14 @@ class StructMeta(SerializerMeta):
 
         return super().__new__(
             cls, name, bases, collections.OrderedDict(classdict))
-    
+
     def __prepare__(name: str, bases: Sequence, **kwargs) -> MetaDict:
         def on_member_add(classdict: MetaDict, key: str, value: Any):
             if not is_strict_subclass(get_as_type(value), Serializer):
                 return None
-            
-            # Try to identify the case of a Serializer defined in the body of
-            # the struct and ignore it, unless the user specifically chose to
-            # redefine it as a member, such as the following case:
-            # class Foo(Struct):
-            #     class Bar(Struct):
-            #         pass
-            #     Bar = Bar  # Treated as member
-            # Make sure to only ignore if this is a new class definition by
-            # comparing to the existing value, if any.
-            if inspect.isclass(value) and key == get_type_name(value) and value != classdict.get(key):
-                if getattr(value, '__module__', None) == classdict.get('__module__'):
-                    class_qual = getattr(value, '__qualname__', '').rsplit('.', 1)[0]
-                    if classdict.get('__qualname__') == class_qual:
-                        return None
+
+            if is_class_in_class_body(classdict, key, value):
+                return None
 
             members = classdict.members
             if members:
@@ -112,6 +100,12 @@ class StructMeta(SerializerMeta):
             raise AttributeError(f'{get_type_name(cls)}: cannot delete Struct member')
         super().__delattr__(name)
 
+    def __contains__(cls, member):
+        return member in cls._heracles_members_()
+
+    def __iter__(cls) -> Iterator:
+        return iter(cls._heracles_members_().keys())
+
     def __repr__(cls) -> str:
         return f'<struct {get_type_name(cls)}>'
 
@@ -123,6 +117,7 @@ class Struct(Serializer, metaclass=StructMeta):
                 setattr(self, name, value[name])
                 del value[name]
             else:
+                # XXX: deepcopy the serializer value instead?
                 setattr(self, name, serializer)
         
         if value:
@@ -148,7 +143,7 @@ class Struct(Serializer, metaclass=StructMeta):
 
     def serialize_value(self, value: 'Struct', settings: Dict[str, Any] = None) -> bytes:
         if type(value) != type(self):
-            raise TypeError('Cannot serialize values of differing type')
+            raise TypeError('Cannot serialize values of other types')
 
         result = bytearray()
         for name, serializer in self._heracles_members_().items():
@@ -173,7 +168,7 @@ class Struct(Serializer, metaclass=StructMeta):
                 data_piece = raw_data[:serializer._heracles_bytesize_()]
             value = serializer.deserialize(data_piece, settings)
 
-            if not serializer._hidden_():
+            if not serializer._heracles_hidden_():
                 members[name] = value
             
             raw_data = raw_data[len(data_piece):]
@@ -183,7 +178,7 @@ class Struct(Serializer, metaclass=StructMeta):
     def _heracles_validate_(self, value: Optional['Struct'] = None) -> 'Struct':
         value = self._get_serializer_value(value)
         if type(self) != type(value):
-            raise ValueError('Cannot validate values of differing types')
+            raise ValueError('Cannot validate values of other types')
 
         for name, serializer in self._heracles_members_().items():
             serializer._heracles_validate_(getattr(value, name))
@@ -195,12 +190,12 @@ class Struct(Serializer, metaclass=StructMeta):
 
         value = self._get_serializer_value(value)
         if type(self) != type(value):
-            raise ValueError('Cannot render values of differing types')
+            raise ValueError('Cannot render values of other types')
 
         text = ',\n'.join(
                     indent_text(
                         f'{name}: {serializer._heracles_render_(getattr(value, name))}'
-                        if not serializer._hidden_() else repr(serializer))
+                        if not serializer._heracles_hidden_() else repr(serializer))
                     for name, serializer in self._heracles_members_().items()
                 )
         if text:
@@ -210,13 +205,14 @@ class Struct(Serializer, metaclass=StructMeta):
     def _heracles_compare_(self, other: 'Struct', value: Optional['Struct'] = None) -> bool:
         value == self._get_serializer_value(value)
         if type(other) != type(self) != type(value):
-            raise TypeError('Cannot compare values of differing types')
+            raise TypeError('Cannot compare values of other types')
 
         return all(
             serializer._heracles_compare_(getattr(other, name), getattr(value, name))
             for name, serializer in self._heracles_members_().items()
-            if not serializer._hidden_())
+            if not serializer._heracles_hidden_())
 
+    @instanceoverride
     def _heracles_bytesize_(self, value: Optional['Struct'] = None) -> int:
         value = self._get_serializer_value(value)
         size = super()._heracles_bytesize_(value)
@@ -228,6 +224,14 @@ class Struct(Serializer, metaclass=StructMeta):
 
         return size
 
-    def __iter__(self) -> KeysView:
-        return self._heracles_members_().keys()
+    def __getitem__(self, member) -> Any:
+        if member not in self:
+            raise KeyError(f'{member} is not a member of {get_type_name(self)}')
+        return getattr(self, member)
+
+    def __contains__(self, member):
+        return member in type(self)
+
+    def __iter__(self) -> Iterator:
+        return iter(type(self))
 

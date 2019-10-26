@@ -1,15 +1,11 @@
-# Serializer
+# Imports
 from .base import *
-
-# Type formatters
 from .scalars import *
-from .vectors import *
+from .array import *
 from .struct import *
 from .enum import *
 # from .bitfield import *
 # from .union import *
-
-# Validators
 from .validators import *
 
 # Info
@@ -26,4 +22,4 @@ __uri__ = 'https://github.com/iscgar/heracles'
 __author__ = 'Isaac Garzón'
 
 __license__ = 'MIT'
-__copyright__ = f'Copyright 2019 {__author__}'
+__copyright__ = f'Copyright © 2019 {__author__}'

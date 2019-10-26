@@ -1,10 +1,10 @@
 import sys
 import collections
-from typing import Any, ByteString, Dict, Mapping, Optional, Sequence, Type, Union as TypeUnion, ValuesView
+from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type, Union as TypeUnion
 
 from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict
 from .scalars import *
-from .utils import first, last, is_strict_subclass, get_type_name, get_as_type
+from ._utils import first, last, is_strict_subclass, get_type_name, get_as_type
 
 __all__ = ['Enum', 'Literal']
 
@@ -121,7 +121,7 @@ class Enum(Serializer, metaclass=EnumMeta):
     def get_literal_name(self, literal: int) -> str:
         # TODO: flags
         return first(k for k, v in self.literals().items() if v == literal)
-    
+
     def _heracles_render_(self, value: Optional[TypeUnion['Enum', int]] = None) -> str:
         value = self._get_serializer_value(value)
         self._heracles_validate_(value)
@@ -133,8 +133,8 @@ class Enum(Serializer, metaclass=EnumMeta):
     def __int__(self) -> int:
         return self.value
 
-    def __iter__(self) -> ValuesView:
-        return self.literals().values()
+    def __iter__(self) -> Iterator:
+        return iter(self.literals().values())
 
 
 Enum = Enum(i32)

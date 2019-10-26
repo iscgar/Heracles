@@ -1,61 +1,63 @@
 import sys
+import copy
 import itertools
-from typing import Any, Dict, ByteString, Optional, Sequence, Type, Union as TypeUnion
+from typing import Any, Dict, ByteString, Iterator, Optional, Sequence, Type, Union as TypeUnion
 
 from .base import Serializer, SerializerMeta, SerializerMetadata
-from .scalars import u8
-from .utils import get_type_name, get_as_type, get_as_value, value_or_default, iter_chunks
-from .validators import ExactValueValidator
+from ._utils import get_type_name, get_as_type, get_as_value, value_or_default, iter_chunks, instanceoverride
 
-
-__all__ = ['Array', 'Padding']
+__all__ = ['Array']
 
 
 class ArrayMeta(SerializerMeta):
-    def __call__(cls, *args, **kwargs):
+    def __getitem__(cls, args):
         is_array_type = (
             issubclass(cls, Array) and 
             getattr(cls, '__module__', None) == __name__ and
             getattr(sys.modules[__name__], get_type_name(cls), None) == cls)
 
-        if is_array_type and not kwargs and 1 <= len(args) <= 2:
-            # Default serializer is u8
-            if len(args) == 2:
-                size, serializer = args
-            else:
-                size, serializer = args[0], u8
+        if not is_array_type or not isinstance(args, tuple) or len(args) != 2:
+            return super().__getitem__(args)
+        
+        size, serializer = args
+        if isinstance(size, int):
+            if size < 0:
+                raise ValueError(f'Array size must not be negative, got {size}')
+            size_min = size_max = size
+        elif isinstance(size, slice):
+            if size.step is not None:
+                raise ValueError('Cannot supply step to Array size')
+            elif not isinstance(size.start, int) or not isinstance(size.stop, int):
+                raise ValueError('Array min and max length must be integers')
+            elif size.start < 0:
+                raise ValueError(f'Array minimum size must not be negative, got {size.start}')
+            elif size.stop < size.start:
+                raise ValueError('Array maximum size must be greater than its minimum size')
+            size_min, size_max = size.start, size.stop
+        else:
+            raise TypeError(f'Expected int or a slice as array size, got {get_type_name(size)}')
+        
+        if not issubclass(get_as_type(serializer), Serializer):
+            raise TypeError(f'Array element type must be a Serializer')
 
-            if isinstance(size, (int, slice)) and issubclass(get_as_type(serializer), Serializer):
-                if isinstance(size, slice):
-                    if size.step is not None:
-                        raise ValueError('Cannot supply step as array size')
-                    if not isinstance(size.start, int) or not isinstance(size.stop, int):
-                        raise ValueError('Array min and max length must be integers')
-                    if size.start == size.stop:
-                        size = size.start
+        if serializer._heracles_hidden_() and size_min != size_max:
+            raise ValueError(f'Array of {get_type_name(serializer)} cannot be variable size')
 
-                if isinstance(size, int):
-                    size_min = size_max = size
-                else:
-                    size_min, size_max = size.start, size.stop
-                
-                serializer = get_as_value(serializer)
-                return type(get_type_name(cls), (cls,), {
-                    SerializerMeta.METAATTR: SerializerMetadata(
-                        serializer._heracles_bytesize_() * size_min),
-                    '_array_size_min': size_min,
-                    '_array_size_max': size_max,
-                    '_serializer': serializer
-                })
-
-        return super().__call__(*args, **kwargs)
+        serializer = get_as_value(serializer)
+        return type(get_type_name(cls), (cls,), {
+            SerializerMeta.METAATTR: SerializerMetadata(
+                serializer._heracles_bytesize_() * size_min),
+            '_array_size_min': size_min,
+            '_array_size_max': size_max,
+            '_serializer': serializer
+        })
 
     def __repr__(cls) -> str:
         if cls._heracles_vst_():
             size = f'{cls._array_size_min}:{cls._array_size_max}'
         else:
             size = f'{cls._array_size_min}'
-        return f'<array {get_type_name(cls._serializer)}[{size}]>'
+        return f'<array <{cls._serializer}> [{size}]>'
 
 
 class Array(Serializer, metaclass=ArrayMeta):
@@ -65,9 +67,14 @@ class Array(Serializer, metaclass=ArrayMeta):
         return super().__init__(value, *args, **kwargs)
     
     @classmethod
+    def _heracles_hidden_(cls) -> bool:
+        return cls._serializer._heracles_hidden_()
+
+    @classmethod
     def _heracles_vst_(cls):
         return cls._array_size_min != cls._array_size_max
 
+    @instanceoverride
     def _heracles_bytesize_(self, value: Optional[TypeUnion['Array', Sequence]] = None):
         value = self._heracles_validate_(value)
         return max(self._array_size_min, len(value)) * self._serializer._heracles_bytesize_()
@@ -87,11 +94,14 @@ class Array(Serializer, metaclass=ArrayMeta):
         else:
             value = self._get_serializer_value(value)
 
-        serialized = b''.join(self._serializer.serialize_value(v, settings) for v in value)
-        if len(serialized) < self._heracles_bytesize_(value):
-            serialized += b''.join(self._serializer.serialize() for _ in range(len(self) - len(value)))
+        serialized = bytearray()
+        for v in value:
+            serialized.extend(self._serializer.serialize_value(v, settings))
+        remaining_elements = (self._heracles_bytesize_(value) - len(serialized)) // self._serializer._heracles_bytesize_()
+        for _ in range(remaining_elements):
+            serialized.extend(self._serializer.serialize())
 
-        return serialized
+        return bytes(serialized)
 
     def deserialize(self, raw_data: ByteString, settings: Dict[str, Any] = None) -> Sequence:
         min_size = self._array_size_min * self._serializer._heracles_bytesize_()
@@ -139,9 +149,9 @@ class Array(Serializer, metaclass=ArrayMeta):
             # This is a C-string, so strip NUL chars from the end
             result = repr(''.join(chr(as_int(v)) for v in value).rstrip('\x00'))
         else:
-            result = '{{{}}}'.format(', '.join(repr(v) for v in value))
+            result = '{{{}}}'.format(', '.join(self._serializer._heracles_render_(v) for v in value))
 
-        return f'{get_type_name(self)}({get_type_name(self._serializer)}[{size}]) {result}'
+        return f'{self._serializer}[{size}] {result}'
     
     def _heracles_compare_(self, other: TypeUnion['Array', Sequence], value: Optional[TypeUnion['Array', Sequence]] = None) -> bool:
         value = self._get_serializer_value(value)
@@ -154,47 +164,16 @@ class Array(Serializer, metaclass=ArrayMeta):
     def __len__(self) -> int:
         return max(self._array_size_min, len(self.value))
 
-    def __iter__(self):
-        for v in self.value:
-            yield self._serializer._get_serializer_value(v)
+    def __getitem__(self, idx):
+        # TODO: slice?
+        if idx < 0:
+            idx = len(self) - idx
+        if not 0 <= idx < self._array_size_max:
+            raise IndexError('Array index out of range')
+        try:
+            return self._serializer._get_serializer_value(self.value[idx])
+        except IndexError:
+            return copy.deepcopy(self._serializer.value)
 
-        for _ in range(len(self.value), len(self)):
-            yield self._serializer.value
-
-
-class PaddingMeta(ArrayMeta):
-    def __call__(cls, *args, **kwargs):
-        if cls is Padding and not kwargs and 1 <= len(args) <= 2:
-            # Default pad value is b'\x00'
-            if len(args) == 2:
-                size, pad_value = args
-            else:
-                size, pad_value = args[0], b'\x00'
-
-            if isinstance(size, int):
-                args = [size, u8(pad_value, validator=ExactValueValidator(
-                    u8(pad_value).value))]
-
-        return super().__call__(*args, **kwargs)
-
-    def __repr__(cls) -> str:
-        return f'<padding {get_type_name(cls._serializer)}[{cls._array_min_size}] ({cls._serializer.serialize()})>'
-
-
-class Padding(Array, metaclass=PaddingMeta):
-    def __init__(self, *args, **kwargs):
-        return super().__init__(b'', *args, **kwargs)
-
-    @classmethod
-    def _hidden_(cls) -> bool:
-        return True
-
-    def deserialize(self, raw_data: ByteString, settings: Dict[str, Any]=None):
-        super().deserialize(raw_data, settings)
-        return b''
-
-    def _heracles_render_(self, value=None) -> str:
-        name = get_type_name(self)
-        size = len(self)
-        val = self._serializer.serialize()
-        return f'{name}({size}, {val})'
+    def __iter__(self) -> Iterator:
+        return (self[i] for i in range(len(self)))

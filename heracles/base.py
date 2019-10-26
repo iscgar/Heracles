@@ -2,7 +2,7 @@ import enum
 import collections
 from typing import Any, ByteString, Callable, Dict, KeysView, Optional, Type, Union as TypeUnion
 
-from .utils import value_or_default, get_type_name, get_as_type
+from ._utils import value_or_default, get_type_name, get_as_type
 
 
 __all__ = ['Endianness', 'Serializer']
@@ -29,7 +29,7 @@ class MetaDict(collections.OrderedDict):
 
         if result is not None:
             # Don't add the member to class dict if it's a hidden serializer
-            if issubclass(get_as_type(result), Serializer) and result._hidden_():
+            if issubclass(get_as_type(result), Serializer) and result._heracles_hidden_():
                 key = f'__heracles_hidden_{self.name}{len(self.members)}_{key}__'
                 self.members[key] = result
                 return
@@ -71,9 +71,9 @@ class SerializerMeta(type):
 
     @staticmethod
     def create_array(size: TypeUnion[int, slice], underlying: Type['Serializer']):
-        from .vectors import Array
+        from .array import Array
         if isinstance(size, (int, slice)):
-            return Array(size, underlying)
+            return Array[size, underlying]
         else:
             raise ValueError(f'Expected an int or a slice, got {get_type_name(size)}')
 
@@ -93,9 +93,10 @@ class SerializerMeta(type):
 
 
 class Serializer(metaclass=SerializerMeta):
+    # TODO: stack validators?
     def __init__(self, value: Any, *, validator: Optional[Callable[[Any], None]] = None):
-        self.validator = validator
-        self._value = value
+        self._heracles_validator = validator
+        self._heracles_value = value
         self._heracles_validate_(value)
 
     @classmethod
@@ -103,7 +104,7 @@ class Serializer(metaclass=SerializerMeta):
         return getattr(cls, SerializerMeta.METAATTR, None)
 
     @classmethod
-    def _hidden_(cls) -> bool:
+    def _heracles_hidden_(cls) -> bool:
         return False
 
     @classmethod
@@ -130,8 +131,8 @@ class Serializer(metaclass=SerializerMeta):
         raise NotImplementedError()
 
     def _heracles_validate_(self, value: Optional[Any] = None) -> Any:
-        if hasattr(self.validator, '__call__'):
-            self.validator(self._get_serializer_value(value))
+        if self._heracles_validator is not None:
+            self._heracles_validator(self._get_serializer_value(value))
         return value
 
     def _heracles_render_(self, value: Optional[Any] = None) -> str:
@@ -143,7 +144,7 @@ class Serializer(metaclass=SerializerMeta):
 
     @property
     def value(self) -> Any:
-        return self._value
+        return self._heracles_value
 
     def __bytes__(self) -> bytes:
         return self.serialize()
