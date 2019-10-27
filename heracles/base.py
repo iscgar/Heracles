@@ -1,8 +1,8 @@
 import enum
 import collections
-from typing import Any, ByteString, Callable, Dict, KeysView, Optional, Type, Union as TypeUnion
+from typing import Any, ByteString, Callable, Dict, Iterator, KeysView, Optional, Type, Union as TypeUnion
 
-from ._utils import value_or_default, get_type_name, get_as_type
+from ._utils import value_or_default, get_type_name, get_as_type, as_iter
 
 
 __all__ = ['Endianness', 'Serializer']
@@ -26,16 +26,13 @@ class MetaDict(collections.OrderedDict):
             raise KeyError(f'`{key}` overrides an existing member')
 
         result = self.onset(self, key, value)
-
         if result is not None:
             # Don't add the member to class dict if it's a hidden serializer
             if issubclass(get_as_type(result), Serializer) and result._heracles_hidden_():
                 key = f'__heracles_hidden_{self.name}{len(self.members)}_{key}__'
                 self.members[key] = result
                 return
-
             self.members[key] = result
-
         super().__setitem__(key, value)
 
 
@@ -54,8 +51,11 @@ class SerializerMetadata(object):
     def __getitem__(self, key: str) -> Any:
         return self.vals[key]
 
-    def __iter__(self) -> KeysView:
+    def __iter__(self) -> Iterator:
         return iter(self.vals)
+
+    def __contains__(self, key):
+        return key in self.vals
     
     def keys(self) -> KeysView:
         return self.vals.keys()
@@ -82,7 +82,7 @@ class SerializerMeta(type):
             if settings is not None:
                 kwargs['settings'] = settings
             return super().__call__(*args, **kwargs)
-        except Exception as e:
+        except Exception:
             if not kwargs and len(args) == 1 and isinstance(args[0], bytes):
                 # TODO: Don't create an unnecessary instance
                 return cls().deserialize(args[0], settings=settings)
@@ -93,9 +93,8 @@ class SerializerMeta(type):
 
 
 class Serializer(metaclass=SerializerMeta):
-    # TODO: stack validators?
     def __init__(self, value: Any, *, validator: Optional[Callable[[Any], None]] = None):
-        self._heracles_validator = validator
+        self._heracles_validator = tuple(as_iter(validator))
         self._heracles_value = value
         self._heracles_validate_(value)
 
@@ -132,16 +131,15 @@ class Serializer(metaclass=SerializerMeta):
 
     def _heracles_validate_(self, value: Optional[Any] = None) -> Any:
         value = self._get_serializer_value(value)
-        if self._heracles_validator is not None:
-            self._heracles_validator(value)
+        for validator in self._heracles_validator:
+            validator(value)
         return value
 
     def _heracles_render_(self, value: Optional[Any] = None) -> str:
-        value = self._get_serializer_value(value)
         return f'{get_type_name(self)}({self._heracles_validate_(value)})'
-    
+
     def _heracles_compare_(self, other: Any, value: Optional[Any] = None) -> bool:
-        return self._get_serializer_value(value) == self._get_serializer_value(other)
+        return self._heracles_validate_(value) == self._heracles_validate_(other)
 
     @property
     def value(self) -> Any:

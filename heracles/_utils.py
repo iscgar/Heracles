@@ -1,5 +1,7 @@
+import copy
 import inspect
-from typing import Any, Iterable, Type, Union as TypeUnion
+import itertools
+from typing import Any, Iterable, Iterator, Optional, Type, Union as TypeUnion
 
 
 def get_as_type(t: TypeUnion[Type, Any]) -> Type:
@@ -44,6 +46,10 @@ def iter_chunks(it, size: int):
         yield it[i:i+size]
 
 
+def is_strict_subclass(cls: Type, classinfo: Type) -> bool:
+    return issubclass(cls, classinfo) and cls is not classinfo
+
+
 def is_class_in_class_body(classdict, name, value):
     # Try to identify the case of a Serializer defined in the body of
     # the struct and ignore it, unless the user specifically chose to
@@ -62,6 +68,30 @@ def is_class_in_class_body(classdict, name, value):
     return False
 
 
+def as_iter(maybe_iter: Any) -> Iterator:
+    try:
+        return iter(maybe_iter if maybe_iter is not None else ())
+    except TypeError:
+        return (maybe_iter,)
+
+
+def chain(value: Any, rest: Optional[Any] = None) -> Iterator:
+    return itertools.chain(as_iter(value), as_iter(rest))
+
+
+def is_immutable(value) -> bool:
+    if isinstance(value, (tuple, frozenset)):
+        return all(map(is_immutable, value))
+    elif isinstance(value, (str, bytes, range, memoryview, bool, int, float, complex)):
+        return True
+    else:
+        return False
+
+
+def copy_if_mutable(value):
+    return copy.deepcopy(value) if not is_immutable(value) else value
+    
+
 class instanceoverride(object):
     def __init__(self, method, instance=None, owner=None):
         self.method = method
@@ -73,7 +103,7 @@ class instanceoverride(object):
 
     def __call__(self, *args, **kwargs):
         return self.__func__(self.owner, *args, **kwargs)
-    
+
     def __func__(self, owner, *args, **kwargs):
         instance = self.instance
         if instance is None:
@@ -85,9 +115,8 @@ class instanceoverride(object):
                 if not args:
                     raise TypeError(f"{get_type_name(self.method)}() missing 1 required positional argument: 'self'")
             instance, args = args[0], args[1:]
-
         return self.method(instance, *args, **kwargs)
-    
+
     def __repr__(self):
         binder = self.instance if self.instance is not None else self.owner
         if binder is not None:

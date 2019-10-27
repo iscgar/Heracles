@@ -1,9 +1,10 @@
+import sys
 import struct
-from typing import Any, ByteString, Dict, Optional, Type, Union as TypeUnion
+from typing import Any, ByteString, Dict, Optional, Sequence, Union as TypeUnion
 
 from .base import Endianness, Serializer, SerializerMeta, SerializerMetadata
-from .validators import Validator, IntRangeValidator, FloatValidator, AsciiCharValidator
-from ._utils import value_or_default
+from .validators import IntRangeValidator, FloatValidator, AsciiCharValidator
+from ._utils import chain, get_type_name, is_strict_subclass
 
 __all__ = [
     'Scalar', 'PadByte', 'char', 'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64',
@@ -12,8 +13,54 @@ __all__ = [
     'u8_be', 'i8_be', 'u16_be', 'i16_be', 'u32_be', 'i32_be', 'u64_be', 'i64_be', 'f32_be', 'f64_be']
 
 
-class Scalar(Serializer):
+class ScalarMeta(SerializerMeta):
+    _FORMATTERS_INFO = {
+        'c': (1, AsciiCharValidator()),
+        'B': (1, IntRangeValidator(0, 255)),
+        'b': (1, IntRangeValidator(-128, 127)),
+        'H': (2, IntRangeValidator(0, 65535)),
+        'h': (2, IntRangeValidator(-32768, 32767)),
+        'I': (4, IntRangeValidator(0, 4294967295)),
+        'i': (4, IntRangeValidator(-2147483648, 2147483647)),
+        'Q': (8, IntRangeValidator(0, 18446744073709551615)),
+        'q': (8, IntRangeValidator(-9223372036854775808, 9223372036854775807)),
+        'f': (4, FloatValidator(32)),
+        'd': (8, FloatValidator(64)),
+    }
+    _SCALAR_ARGS = ('endianness', 'fmt')
+
+    def __new__(cls, name, bases, classdict, **kwargs):
+        if hasattr(sys.modules[__name__], 'Scalar'):
+            args = {}
+            # Look for required arguments in base classes
+            for b in (b for b in bases if is_strict_subclass(b, Scalar)):
+                meta = b._heracles_metadata_()
+                endianness, fmt = meta.fmt
+                args['endianness'] = Endianness(endianness)
+                args['fmt'] = fmt
+            # Override with keyword arguments, if any
+            for k in cls._SCALAR_ARGS:
+                if k in kwargs:
+                    args[k] = kwargs[k]
+                    del kwargs[k]
+            classdict[SerializerMeta.METAATTR] = cls.scalar_metadata(**args)
+        return super().__new__(cls, name, bases, classdict, **kwargs)
+
+    @classmethod
+    def scalar_metadata(cls, *, endianness: Endianness, fmt: str) -> SerializerMetadata:
+        if not isinstance(endianness, Endianness):
+            raise TypeError(f'Expected Endianness, got {get_type_name(endianness)}')
+        if not fmt in cls._FORMATTERS_INFO:
+            raise ValueError(f'Unsupported scalar format: {fmt}')
+        size, validator = cls._FORMATTERS_INFO[fmt]
+        return SerializerMetadata(
+            size, fmt=f'{endianness.value}{fmt}', validator=validator)
+
+
+class Scalar(Serializer, metaclass=ScalarMeta):
     def __init__(self, value: TypeUnion[int, float] = 0, *args, **kwargs):
+        kwargs['validator'] = tuple(
+            chain(self._heracles_metadata_().validator, kwargs.get('validator')))
         super().__init__(value, *args, **kwargs)
 
     def __int__(self) -> int:
@@ -22,74 +69,40 @@ class Scalar(Serializer):
     def __float__(self) -> float:
         return float(self.value)
 
-    def _heracles_validate_(self, value: Optional[TypeUnion['Scalar', int, float]] = None) -> TypeUnion[int, float]:
-        value = self._get_serializer_value(value)
-        self._heracles_metadata_().validator(value)
-        return super()._heracles_validate_(value)
-
     def serialize_value(self, value: TypeUnion['Scalar', int, float], settings: Optional[Dict[str, Any]] = None) -> bytes:
-        if value_or_default(settings, {}).get('validate_on_serialize'):
-            value = self._heracles_validate_(value)
-        else:
-            value = self._get_serializer_value(value)
+        value = self._heracles_validate_(value)
         return struct.pack(self._heracles_metadata_().fmt, value)
 
     def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> TypeUnion[int, float, bytes]:
         value = struct.unpack(self._heracles_metadata_().fmt, raw_data)[0]
-        self._heracles_validate_(value)
+        return self._heracles_validate_(value)
+
+
+# Specialization of u8 to silently accept `bytes` values
+class u8(Scalar, endianness=Endianness.native, fmt='B'):
+    def _get_serializer_value(self, value: Optional[TypeUnion['u8', int, bytes]] = None):
+        value = super()._get_serializer_value(value)
+        if isinstance(value, bytes):
+            return value[0]
+        return value
+
+    def deserialize(self, raw_data, settings: Optional[Dict[str, Any]] = None):
+        value = super().deserialize(raw_data, settings)
+        if isinstance(self.value, bytes):
+            return bytes((value,))
         return value
 
 
-def _scalar_type(name: str, size: int, endianness: Endianness, fmt: str, validator: Validator) -> Type[Scalar]:
-    return type(name, (Scalar,), {
-        SerializerMeta.METAATTR: SerializerMetadata(
-            size, fmt=f'{endianness.value}{fmt}', validator=validator)})
-
-
-def _u8_type(name: str, endianness: Endianness) -> Type[Scalar]:
-    typ = _scalar_type(name, 1, endianness, 'B', IntRangeValidator(0, 255))
-    __class__ = typ
-
-    # TODO: This conversion is completely broken when interacting with the rest of the library
-    def convert(value):
-        # Silently convert from byte string to value for u8*
-        if isinstance(value, bytes) and len(value) == typ._heracles_bytesize_():
-            return ord(value)
-        return value
-
-    def init(self, value: TypeUnion[int, bytes] = 0, *args, **kwargs):
-        super(typ, self).__init__(convert(value), *args, **kwargs)
-
-    def _heracles_validate_(self, value: Optional[TypeUnion[typ, int, bytes]] = None) -> int:
-        return super(typ, self)._heracles_validate_(convert(value))
-
-    def serialize_value(self, value: TypeUnion[typ, int, bytes], settings: Dict[str, Any] = None) -> bytes:
-        return super(typ, self).serialize_value(convert(value), settings)
-    
-    # def _get_serializer_value(self, value=None):
-    #     value = super(typ, self)._get_serializer_value(value)
-    #     if isinstance(self.value, bytes) and isinstance(value, int):
-    #         value = bytes((value,))
-    #     return value
-
-    typ.__init__ = init
-    typ._heracles_validate_ = _heracles_validate_
-    typ.serialize_value = serialize_value
-    # typ._get_serializer_value = _get_serializer_value
-    return typ
-
-
-# Native scalar types
-u8 = _u8_type('u8', Endianness.native)
-i8 = _scalar_type('i8', 1, Endianness.native, 'b', IntRangeValidator(-128, 127))
-u16 = _scalar_type('u16', 2, Endianness.native, 'H', IntRangeValidator(0, 65535))
-i16 = _scalar_type('i16', 2, Endianness.native, 'h', IntRangeValidator(-32768, 32767))
-u32 = _scalar_type('u32', 4, Endianness.native, 'I', IntRangeValidator(0, 4294967295))
-i32 = _scalar_type('i32', 4, Endianness.native, 'i', IntRangeValidator(-2147483648, 2147483647))
-u64 = _scalar_type('u64', 8, Endianness.native, 'Q', IntRangeValidator(0, 18446744073709551615))
-i64 = _scalar_type('i64', 8, Endianness.native, 'q', IntRangeValidator(-9223372036854775808, 9223372036854775807))
-f32 = _scalar_type('f32', 4, Endianness.native, 'f', FloatValidator(32))
-f64 = _scalar_type('f64', 8, Endianness.native, 'd', FloatValidator(64))
+# Rest of native scalar types
+class i8(Scalar, endianness=Endianness.native, fmt='b'): pass
+class u16(Scalar, endianness=Endianness.native, fmt='H'): pass
+class i16(Scalar, endianness=Endianness.native, fmt='h'): pass
+class u32(Scalar, endianness=Endianness.native, fmt='I'): pass
+class i32(Scalar, endianness=Endianness.native, fmt='i'): pass
+class u64(Scalar, endianness=Endianness.native, fmt='Q'): pass
+class i64(Scalar, endianness=Endianness.native, fmt='q'): pass
+class f32(Scalar, endianness=Endianness.native, fmt='f'): pass
+class f64(Scalar, endianness=Endianness.native, fmt='d'): pass
 
 # stdint.h aliases of native scalar types
 uint8_t = u8
@@ -102,31 +115,31 @@ uint64_t = u64
 int64_t = i64
 
 # Big endian scalar types
-u8_be = _u8_type('u8_be', Endianness.big)
-i8_be = _scalar_type('i8_be', 1, Endianness.big, 'b', IntRangeValidator(-128, 127))
-u16_be = _scalar_type('u16_be', 2, Endianness.big, 'H', IntRangeValidator(0, 65535))
-i16_be = _scalar_type('i16_be', 2, Endianness.big, 'h', IntRangeValidator(-32768, 32767))
-u32_be = _scalar_type('u32_be', 4, Endianness.big, 'I', IntRangeValidator(0, 4294967295))
-i32_be = _scalar_type('i32_be', 4, Endianness.big, 'i', IntRangeValidator(-2147483648, 2147483647))
-u64_be = _scalar_type('u64_be', 8, Endianness.big, 'Q', IntRangeValidator(0, 18446744073709551615))
-i64_be = _scalar_type('i64_be', 8, Endianness.big, 'q', IntRangeValidator(-9223372036854775808, 9223372036854775807))
-f32_be = _scalar_type('f32_be', 4, Endianness.big, 'f', FloatValidator(32))
-f64_be = _scalar_type('f64_be', 8, Endianness.big, 'd', FloatValidator(64))
+class u8_be(u8, endianness=Endianness.big): pass
+class i8_be(Scalar, endianness=Endianness.big, fmt='b'): pass
+class u16_be(Scalar, endianness=Endianness.big, fmt='H'): pass
+class i16_be(Scalar, endianness=Endianness.big, fmt='h'): pass
+class u32_be(Scalar, endianness=Endianness.big, fmt='I'): pass
+class i32_be(Scalar, endianness=Endianness.big, fmt='i'): pass
+class u64_be(Scalar, endianness=Endianness.big, fmt='Q'): pass
+class i64_be(Scalar, endianness=Endianness.big, fmt='q'): pass
+class f32_be(Scalar, endianness=Endianness.big, fmt='f'): pass
+class f64_be(Scalar, endianness=Endianness.big, fmt='d'): pass
 
 # Little endian scalar types
-u8_le = _u8_type('u8_le', Endianness.little)
-i8_le = _scalar_type('i8_le', 1, Endianness.little, 'b', IntRangeValidator(-128, 127))
-u16_le = _scalar_type('u16_le', 2, Endianness.little, 'H', IntRangeValidator(0, 65535))
-i16_le = _scalar_type('i16_le', 2, Endianness.little, 'h', IntRangeValidator(-32768, 32767))
-u32_le = _scalar_type('u32_le', 4, Endianness.little, 'I', IntRangeValidator(0, 4294967295))
-i32_le = _scalar_type('i32_le', 4, Endianness.little, 'i', IntRangeValidator(-2147483648, 2147483647))
-u64_le = _scalar_type('u64_le', 8, Endianness.little, 'Q', IntRangeValidator(0, 18446744073709551615))
-i64_le = _scalar_type('i64_le', 8, Endianness.little, 'q', IntRangeValidator(-9223372036854775808, 9223372036854775807))
-f32_le = _scalar_type('f32_le', 4, Endianness.little, 'f', FloatValidator(32))
-f64_le = _scalar_type('f64_le', 8, Endianness.little, 'd', FloatValidator(64))
+class u8_le(u8, endianness=Endianness.little): pass
+class i8_le(Scalar, endianness=Endianness.little, fmt='b'): pass
+class u16_le(Scalar, endianness=Endianness.little, fmt='H'): pass
+class i16_le(Scalar, endianness=Endianness.little, fmt='h'): pass
+class u32_le(Scalar, endianness=Endianness.little, fmt='I'): pass
+class i32_le(Scalar, endianness=Endianness.little, fmt='i'): pass
+class u64_le(Scalar, endianness=Endianness.little, fmt='Q'): pass
+class i64_le(Scalar, endianness=Endianness.little, fmt='q'): pass
+class f32_le(Scalar, endianness=Endianness.little, fmt='f'): pass
+class f64_le(Scalar, endianness=Endianness.little, fmt='d'): pass
 
 
-class char(_scalar_type('char', 1, Endianness.native, 'c', AsciiCharValidator())):
+class char(Scalar, endianness=Endianness.native, fmt='c'):
     def __init__(self, value: TypeUnion[str, bytes] = '\x00', *args, **kwargs):
         super().__init__(value, *args, **kwargs)
 
@@ -152,7 +165,7 @@ class PadByte(u8):
 
     def _heracles_validate_(self, value: Optional[TypeUnion[int, bytes]] = None) -> int:
         value = super()._heracles_validate_(value)
-        if value != self.value:
+        if value != self._get_serializer_value():
             raise ValueError(f'Expected padding value {self.value}, got {value}')
         return value
 

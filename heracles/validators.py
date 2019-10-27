@@ -42,7 +42,7 @@ class ExactValueValidator(Validator):
 
 
 class IntRangeValidator(Validator):
-    def __init__(self, min_val, max_val, inclusive: bool=True):
+    def __init__(self, min_val: int, max_val: int, inclusive: bool = True):
         self.min = min_val
         self.max = max_val + int(bool(inclusive))
 
@@ -51,7 +51,7 @@ class IntRangeValidator(Validator):
             raise ValueError(f'Expected int, got {type(value)}')
 
         if not self.min <= value < self.max:
-            raise ValueError(f'Value `{value}` is out of range [{self.min}, {self.max})')
+            raise ValueError(f'`{value}` is out of range [{self.min}, {self.max})')
 
 
 class FloatValidator(Validator):
@@ -68,7 +68,7 @@ class FloatValidator(Validator):
 
 
 class AsciiCharValidator(Validator):
-    def __call__(self, value):
+    def __call__(self, value: TypeUnion[str, bytes]):
         if isinstance(value, str):
             value = value.encode('ascii')
         if not isinstance(value, bytes) or len(value) != 1:
