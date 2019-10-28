@@ -2,7 +2,7 @@ import abc
 import struct
 from typing import Any, Callable, Iterable, Union as TypeUnion
 
-from ._utils import get_type_name
+from ._utils import type_name
 
 
 class Validator(abc.ABC):
@@ -24,12 +24,12 @@ class FalseValidator(Validator):
 class PredicateValidator(Validator):
     def __init__(self, pred: Callable[[Any], bool]):
         if not hasattr(pred, '__call__'):
-            raise TypeError(f'{get_type_name(pred)} is not callable')
+            raise TypeError(f'{type_name(pred)} is not callable')
         self.pred = pred
 
     def __call__(self, value: Any) -> None:
         if not self.pred(value):
-            raise ValueError(f'Calling {get_type_name(self.pred)}({value}) returned False')
+            raise ValueError(f'Calling {type_name(self.pred)}({value}) returned False')
 
 
 class ExactValueValidator(Validator):

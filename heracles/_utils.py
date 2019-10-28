@@ -1,20 +1,20 @@
 import copy
 import inspect
 import itertools
-from typing import Any, Iterable, Iterator, Optional, Type, Union as TypeUnion
+from typing import Any, Iterable, Iterator, Mapping, Optional, Type, Union as TypeUnion
 
 
-def get_as_type(t: TypeUnion[Type, Any]) -> Type:
+def as_type(t: Any) -> Type:
     return t if inspect.isclass(t) else type(t)
 
 
-def get_as_value(v):
+def get_as_value(v: Any) -> Any:
     # TODO: Get rid of this
     return v() if inspect.isclass(v) else v
 
 
-def get_type_name(t: TypeUnion[Type, Any]) -> str:
-    return get_as_type(t).__name__
+def type_name(t: Any) -> str:
+    return t.__name__ if hasattr(t, '__name__') else type(t).__name__
 
 
 def padto(data: bytes, size: int, pad_val: bytes = b'\x00', leftpad: bool = False) -> bytes:
@@ -41,16 +41,15 @@ def last(it: Iterable) -> Any:
     return next(reversed(it))
 
 
-def iter_chunks(it, size: int):
-    for i in range(0, len(it), size):
-        yield it[i:i+size]
+def iter_chunks(it, size: int) -> Iterator:
+    return (it[i:i+size] for i in range(0, len(it), size))
 
 
 def is_strict_subclass(cls: Type, classinfo: Type) -> bool:
     return issubclass(cls, classinfo) and cls is not classinfo
 
 
-def is_class_in_class_body(classdict, name, value):
+def is_class_in_class_body(classdict: Mapping[str, Any], name: str, value: Type):
     # Try to identify the case of a Serializer defined in the body of
     # the struct and ignore it, unless the user specifically chose to
     # redefine it as a member, such as the following case:
@@ -60,7 +59,7 @@ def is_class_in_class_body(classdict, name, value):
     #     Bar = Bar  # Treated as member
     # Make sure to only ignore if this is a new class definition by
     # comparing to the existing value, if any.
-    if inspect.isclass(value) and name == get_type_name(value) and value != classdict.get(name):
+    if inspect.isclass(value) and name == type_name(value) and value != classdict.get(name):
         if getattr(value, '__module__', None) == classdict.get('__module__'):
             class_qual = getattr(value, '__qualname__', '').rsplit('.', 1)[0]
             if classdict.get('__qualname__') == class_qual:
@@ -79,7 +78,7 @@ def chain(value: Any, rest: Optional[Any] = None) -> Iterator:
     return itertools.chain(as_iter(value), as_iter(rest))
 
 
-def is_immutable(value) -> bool:
+def is_immutable(value: Any) -> bool:
     if isinstance(value, (tuple, frozenset)):
         return all(map(is_immutable, value))
     elif isinstance(value, (str, bytes, range, memoryview, bool, int, float, complex)):
@@ -88,11 +87,13 @@ def is_immutable(value) -> bool:
         return False
 
 
-def copy_if_mutable(value):
+def copy_if_mutable(value: Any) -> Any:
+    """ Returns a copy of a value if mutable, otherwise returns the original value """
     return copy.deepcopy(value) if not is_immutable(value) else value
-    
+
 
 class instanceoverride(object):
+    """ A descriptor that allows a method to override a base class' classmethod only when invoked with instance """
     def __init__(self, method, instance=None, owner=None):
         self.method = method
         self.instance = instance
@@ -107,13 +108,13 @@ class instanceoverride(object):
     def __func__(self, owner, *args, **kwargs):
         instance = self.instance
         if instance is None:
-            if not args or not issubclass(get_as_type(args[0]), self.owner):
+            if not args or not issubclass(as_type(args[0]), self.owner):
                 for base in self.owner.__mro__[1:]:
                     method = getattr(base, self.method.__name__)
                     if method is not None:
                         return method.__func__(owner, *args, **kwargs)
                 if not args:
-                    raise TypeError(f"{get_type_name(self.method)}() missing 1 required positional argument: 'self'")
+                    raise TypeError(f"{type_name(self.method)}() missing 1 required positional argument: 'self'")
             instance, args = args[0], args[1:]
         return self.method(instance, *args, **kwargs)
 

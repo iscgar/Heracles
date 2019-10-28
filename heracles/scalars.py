@@ -1,10 +1,11 @@
 import sys
+import inspect
 import struct
 from typing import Any, ByteString, Dict, Optional, Sequence, Union as TypeUnion
 
 from .base import Endianness, Serializer, SerializerMeta, SerializerMetadata
 from .validators import IntRangeValidator, FloatValidator, AsciiCharValidator
-from ._utils import chain, get_type_name, is_strict_subclass
+from ._utils import chain, type_name, is_strict_subclass
 
 __all__ = [
     'Scalar', 'PadByte', 'char', 'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64',
@@ -13,7 +14,7 @@ __all__ = [
     'u8_be', 'i8_be', 'u16_be', 'i16_be', 'u32_be', 'i32_be', 'u64_be', 'i64_be', 'f32_be', 'f64_be']
 
 
-class ScalarMeta(SerializerMeta):
+class ScalarMetadata(SerializerMetadata):
     _FORMATTERS_INFO = {
         'c': (1, AsciiCharValidator()),
         'B': (1, IntRangeValidator(0, 255)),
@@ -27,34 +28,41 @@ class ScalarMeta(SerializerMeta):
         'f': (4, FloatValidator(32)),
         'd': (8, FloatValidator(64)),
     }
-    _SCALAR_ARGS = ('endianness', 'fmt')
+
+    def __init__(self, *, endianness: Endianness, fmt: str):
+        if not isinstance(endianness, Endianness):
+            raise TypeError(f'Expected Endianness, got {type_name(endianness)}')
+        if not fmt in self._FORMATTERS_INFO:
+            raise ValueError(f'Unsupported scalar format: {fmt}')
+        size, validator = self._FORMATTERS_INFO[fmt]
+        super().__init__(size)
+        self.endianness = endianness
+        self.fmt = fmt
+        self.fmt_spec = f'{endianness.value}{fmt}'
+        self.validator = validator
+
+
+class ScalarMeta(SerializerMeta):
+    _SCALAR_ARGS = tuple(
+        p.name for p in inspect.signature(ScalarMetadata.__init__).parameters.values()
+        if p.kind == inspect.Parameter.KEYWORD_ONLY)
 
     def __new__(cls, name, bases, classdict, **kwargs):
         if hasattr(sys.modules[__name__], 'Scalar'):
             args = {}
             # Look for required arguments in base classes
             for b in (b for b in bases if is_strict_subclass(b, Scalar)):
+                if args:
+                    raise TypeError('Cannot inherit from more than one Scalar base')
                 meta = b._heracles_metadata_()
-                endianness, fmt = meta.fmt
-                args['endianness'] = Endianness(endianness)
-                args['fmt'] = fmt
+                for arg in cls._SCALAR_ARGS:
+                    args[arg] = getattr(meta, arg)
             # Override with keyword arguments, if any
             for k in cls._SCALAR_ARGS:
                 if k in kwargs:
-                    args[k] = kwargs[k]
-                    del kwargs[k]
-            classdict[SerializerMeta.METAATTR] = cls.scalar_metadata(**args)
+                    args[k] = kwargs.pop(k)
+            classdict[SerializerMeta.METAATTR] = ScalarMetadata(**args)
         return super().__new__(cls, name, bases, classdict, **kwargs)
-
-    @classmethod
-    def scalar_metadata(cls, *, endianness: Endianness, fmt: str) -> SerializerMetadata:
-        if not isinstance(endianness, Endianness):
-            raise TypeError(f'Expected Endianness, got {get_type_name(endianness)}')
-        if not fmt in cls._FORMATTERS_INFO:
-            raise ValueError(f'Unsupported scalar format: {fmt}')
-        size, validator = cls._FORMATTERS_INFO[fmt]
-        return SerializerMetadata(
-            size, fmt=f'{endianness.value}{fmt}', validator=validator)
 
 
 class Scalar(Serializer, metaclass=ScalarMeta):
@@ -71,10 +79,10 @@ class Scalar(Serializer, metaclass=ScalarMeta):
 
     def serialize_value(self, value: TypeUnion['Scalar', int, float], settings: Optional[Dict[str, Any]] = None) -> bytes:
         value = self._heracles_validate_(value)
-        return struct.pack(self._heracles_metadata_().fmt, value)
+        return struct.pack(self._heracles_metadata_().fmt_spec, value)
 
     def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> TypeUnion[int, float, bytes]:
-        value = struct.unpack(self._heracles_metadata_().fmt, raw_data)[0]
+        value = struct.unpack(self._heracles_metadata_().fmt_spec, raw_data)[0]
         return self._heracles_validate_(value)
 
 

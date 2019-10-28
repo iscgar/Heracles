@@ -1,10 +1,10 @@
-import inspect
+import sys
 import itertools
 import collections
 from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type
 
 from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict
-from ._utils import last, get_type_name, get_as_type, get_as_value, is_strict_subclass, is_class_in_class_body, instanceoverride
+from ._utils import last, type_name, as_type, get_as_value, is_strict_subclass, is_class_in_class_body, instanceoverride
 
 
 __all__ = ['Struct', 'BaseVstError', 'FieldVstError', 'UnknownFieldsError']
@@ -27,7 +27,7 @@ class FieldVstError(TypeError):
 
 class UnknownFieldsError(ValueError):
     def __init__(self, typ: Type['Struct'], fields: Sequence[str]):
-        type_name = get_type_name(typ)
+        type_name = type_name(typ)
         field_names = ', '.join(f'`{f}`' for f in fields)
         if len(fields) > 1:
             message = f'The fields {field_names} are not memebrs of {type_name}'
@@ -36,34 +36,38 @@ class UnknownFieldsError(ValueError):
         super().__init__(message)
 
 
+class StructMetadata(SerializerMetadata):
+    def __init__(self, *, members: collections.OrderedDict):
+        size = sum(m._heracles_bytesize_() for m in members.values())
+        super().__init__(size)
+        self.members = members
+
+
 class StructMeta(SerializerMeta):
     def __new__(cls, name: str, bases: Sequence, classdict: MetaDict) -> 'Struct':
-        if not classdict.get(SerializerMeta.METAATTR):
-            size = 0
+        if hasattr(sys.modules[__name__], 'Struct'):
             last_serializer = None
             metamembers = MetaDict(name)
 
             for base in (b for b in bases if is_strict_subclass(b, Serializer)):
                 if not issubclass(base, Struct):
                     raise TypeError('Struct can only inherit from other structs')
+                elif base is Struct:
+                    continue  # Struct itself has no metadata
                 elif last_serializer and base._heracles_members_():
-                    raise BaseVstError(get_type_name(last_serializer), get_type_name(base))
+                    raise BaseVstError(type_name(last_serializer), type_name(base))
                 elif base._heracles_vst_():
                     last_serializer = base
-
                 metamembers.update(base._heracles_members_())
-            
+
             if last_serializer and classdict.members:
                 last_name, last_value = last(classdict.members.items())
                 if last_value._heracles_vst_():
-                    raise BaseVstError(get_type_name(last_serializer), name)
+                    raise BaseVstError(type_name(last_serializer), name)
             metamembers.update(classdict.members)
-            metamembers = metamembers.members
 
             classdict.update({
-                SerializerMeta.METAATTR: SerializerMetadata(
-                    sum(m._heracles_bytesize_() for m in metamembers.values()),
-                    members=metamembers),
+                SerializerMeta.METAATTR: StructMetadata(members=metamembers.members),
             })
 
         return super().__new__(
@@ -71,7 +75,7 @@ class StructMeta(SerializerMeta):
 
     def __prepare__(name: str, bases: Sequence, **kwargs) -> MetaDict:
         def on_member_add(classdict: MetaDict, key: str, value: Any):
-            if not issubclass(get_as_type(value), Serializer):
+            if not issubclass(as_type(value), Serializer):
                 return None
             elif is_class_in_class_body(classdict, key, value):
                 return None
@@ -93,7 +97,7 @@ class StructMeta(SerializerMeta):
 
     def __delattr__(cls, name: str) -> None:
         if name in cls._heracles_members_():
-            raise AttributeError(f'{get_type_name(cls)}: cannot delete Struct member')
+            raise AttributeError(f'{type_name(cls)}: cannot delete Struct member')
         super().__delattr__(name)
 
     def __contains__(cls, member) -> bool:
@@ -103,13 +107,13 @@ class StructMeta(SerializerMeta):
         return iter(cls._heracles_members_().keys())
 
     def __repr__(cls) -> str:
-        return f'<struct {get_type_name(cls)}>'
+        return f'<struct {type_name(cls)}>'
 
 
 class Struct(Serializer, metaclass=StructMeta):
     def __init__(self, value: Mapping[str, Serializer] = {}, *args, **kwargs):
         if not isinstance(value, dict) and type(value) != type(self):
-            raise TypeError(f'Cannot construct {get_type_name(self)} from {get_type_name(value)}')
+            raise TypeError(f'Cannot construct {type_name(self)} from {type_name(value)}')
 
         for name, serializer in self._heracles_members_().items():
             try:
@@ -151,13 +155,13 @@ class Struct(Serializer, metaclass=StructMeta):
                 result.extend(serializer.serialize_value(getattr(value, name), settings))
             except ValueError as e:
                 raise ValueError(
-                    f'Invalid data in field `{name}` of `{get_type_name(self)}`: {e.message}')
+                    f'Invalid data in field `{name}` of `{type_name(self)}`: {e.message}')
         return bytes(result)
 
     def deserialize(self, raw_data: ByteString, settings: Dict[str, Any] = None) -> 'Struct':
         if len(raw_data) < self._heracles_bytesize_():
             raise ValueError(
-                f'Raw data size is too small for the struct `{get_type_name(self)}`')
+                f'Raw data size is too small for the struct `{type_name(self)}`')
 
         members = {}
         for name, serializer in self._heracles_members_().items():
@@ -198,7 +202,7 @@ class Struct(Serializer, metaclass=StructMeta):
                 )
         if text:
             text = f'\n{text}\n'
-        return f'{get_type_name(self)} {{{text}}}'
+        return f'{type_name(self)} {{{text}}}'
 
     def _heracles_compare_(self, other: 'Struct', value: Optional['Struct'] = None) -> bool:
         value = self._get_serializer_value(value)
@@ -223,7 +227,7 @@ class Struct(Serializer, metaclass=StructMeta):
     def __getitem__(self, member) -> Any:
         # XXX: override __getattribute__ and return values instead of serializers?
         if member not in self:
-            raise KeyError(f'{member} is not a member of {get_type_name(self)}')
+            raise KeyError(f'{member} is not a member of {type_name(self)}')
         return getattr(self, member)
 
     def __contains__(self, member) -> bool:

@@ -2,7 +2,7 @@ import enum
 import collections
 from typing import Any, ByteString, Callable, Dict, Iterator, KeysView, Optional, Type, Union as TypeUnion
 
-from ._utils import value_or_default, get_type_name, get_as_type, as_iter
+from ._utils import value_or_default, type_name, as_type, as_iter
 
 
 __all__ = ['Endianness', 'Serializer']
@@ -28,7 +28,7 @@ class MetaDict(collections.OrderedDict):
         result = self.onset(self, key, value)
         if result is not None:
             # Don't add the member to class dict if it's a hidden serializer
-            if issubclass(get_as_type(result), Serializer) and result._heracles_hidden_():
+            if issubclass(as_type(result), Serializer) and result._heracles_hidden_():
                 key = f'__heracles_hidden_{self.name}{len(self.members)}_{key}__'
                 self.members[key] = result
                 return
@@ -37,33 +37,22 @@ class MetaDict(collections.OrderedDict):
 
 
 class SerializerMetadata(object):
-    _METAATTR_SIZE = 'size'
+    def __init__(self, size: int):
+        self.size = size
 
-    def __init__(self, size: int, **kwargs):
-        self.vals = {self._METAATTR_SIZE: size, **kwargs}
-
-    def __getattribute__(self, attr: str) -> Any:
-        try:
-            return super().__getattribute__(attr)
-        except AttributeError:
-            return self.vals[attr]
-
+    def __setattr__(self, key: str, value: Any):
+        if hasattr(self, key):
+            raise AttributeError(f'Cannot reassign {key}')
+        super().__setattr__(key, value)
+    
     def __getitem__(self, key: str) -> Any:
-        return self.vals[key]
+        try:
+            return getattr(self, key)
+        except AttributeError as e:
+            raise KeyError(e.message)
 
     def __iter__(self) -> Iterator:
-        return iter(self.vals)
-
-    def __contains__(self, key):
-        return key in self.vals
-    
-    def keys(self) -> KeysView:
-        return self.vals.keys()
-    
-    def extended(self, **kwargs) -> 'SerializerMetadata':
-        for k in kwargs:
-            assert k not in self, f'Cannot override existing key `{k}`'
-        return SerializerMetadata(**self.vals, **kwargs)
+        return (k for k in dir(self) if not k.startswith('_'))
 
 
 class SerializerMeta(type):
@@ -75,7 +64,7 @@ class SerializerMeta(type):
         if isinstance(size, (int, slice)):
             return Array[size, underlying]
         else:
-            raise ValueError(f'Expected an int or a slice, got {get_type_name(size)}')
+            raise ValueError(f'Expected an int or a slice, got {type_name(size)}')
 
     def __call__(cls, *args, settings: Dict[str, Any] = None, **kwargs) -> 'Serializer':
         try:
@@ -136,7 +125,7 @@ class Serializer(metaclass=SerializerMeta):
         return value
 
     def _heracles_render_(self, value: Optional[Any] = None) -> str:
-        return f'{get_type_name(self)}({self._heracles_validate_(value)})'
+        return f'{type_name(self)}({self._heracles_validate_(value)})'
 
     def _heracles_compare_(self, other: Any, value: Optional[Any] = None) -> bool:
         return self._heracles_validate_(value) == self._heracles_validate_(other)
