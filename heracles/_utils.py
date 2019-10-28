@@ -1,11 +1,18 @@
 import copy
 import inspect
 import itertools
-from typing import Any, Iterable, Iterator, Mapping, Optional, Type, Union as TypeUnion
+from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence, Type, Union as TypeUnion
+
+
+ParameterKind = type(inspect.Parameter.KEYWORD_ONLY)
+
+
+def is_type(v: Any) -> bool:
+    return inspect.isclass(v)
 
 
 def as_type(t: Any) -> Type:
-    return t if inspect.isclass(t) else type(t)
+    return t if is_type(t) else type(t)
 
 
 def get_as_value(v: Any) -> Any:
@@ -14,7 +21,10 @@ def get_as_value(v: Any) -> Any:
 
 
 def type_name(t: Any) -> str:
-    return t.__name__ if hasattr(t, '__name__') else type(t).__name__
+    try:
+        return t.__name__
+    except AttributeError:
+        return type(t).__name__
 
 
 def padto(data: bytes, size: int, pad_val: bytes = b'\x00', leftpad: bool = False) -> bytes:
@@ -29,6 +39,12 @@ def padto(data: bytes, size: int, pad_val: bytes = b'\x00', leftpad: bool = Fals
     return data
 
 
+def func_params(func, kind: Optional[ParameterKind] = None) -> tuple:
+    return tuple(
+        p for p in inspect.signature(func).parameters.values()
+        if kind is None or p.kind == kind)
+
+
 def value_or_default(value: Any, default: Any) -> Any:
     return value if value is not None else default
 
@@ -41,15 +57,15 @@ def last(it: Iterable) -> Any:
     return next(reversed(it))
 
 
-def iter_chunks(it, size: int) -> Iterator:
-    return (it[i:i+size] for i in range(0, len(it), size))
+def iter_chunks(seq: Sequence, size: int) -> Iterator:
+    return (seq[i:i+size] for i in range(0, len(seq), size))
 
 
 def is_strict_subclass(cls: Type, classinfo: Type) -> bool:
     return issubclass(cls, classinfo) and cls is not classinfo
 
 
-def is_class_in_class_body(classdict: Mapping[str, Any], name: str, value: Type):
+def is_classdef_in_classdict(classdict: Mapping[str, Any], name: str, value: Type):
     # Try to identify the case of a Serializer defined in the body of
     # the struct and ignore it, unless the user specifically chose to
     # redefine it as a member, such as the following case:
@@ -71,7 +87,7 @@ def as_iter(maybe_iter: Any) -> Iterator:
     try:
         return iter(maybe_iter if maybe_iter is not None else ())
     except TypeError:
-        return (maybe_iter,)
+        return iter((maybe_iter,))
 
 
 def chain(value: Any, rest: Optional[Any] = None) -> Iterator:
@@ -90,37 +106,3 @@ def is_immutable(value: Any) -> bool:
 def copy_if_mutable(value: Any) -> Any:
     """ Returns a copy of a value if mutable, otherwise returns the original value """
     return copy.deepcopy(value) if not is_immutable(value) else value
-
-
-class instanceoverride(object):
-    """ A descriptor that allows a method to override a base class' classmethod only when invoked with instance """
-    def __init__(self, method, instance=None, owner=None):
-        self.method = method
-        self.instance = instance
-        self.owner = owner
-
-    def __get__(self, instance, owner=None):
-        return type(self)(self.method, instance, owner)
-
-    def __call__(self, *args, **kwargs):
-        return self.__func__(self.owner, *args, **kwargs)
-
-    def __func__(self, owner, *args, **kwargs):
-        instance = self.instance
-        if instance is None:
-            if not args or not issubclass(as_type(args[0]), self.owner):
-                for base in self.owner.__mro__[1:]:
-                    method = getattr(base, self.method.__name__)
-                    if method is not None:
-                        return method.__func__(owner, *args, **kwargs)
-                if not args:
-                    raise TypeError(f"{type_name(self.method)}() missing 1 required positional argument: 'self'")
-            instance, args = args[0], args[1:]
-        return self.method(instance, *args, **kwargs)
-
-    def __repr__(self):
-        binder = self.instance if self.instance is not None else self.owner
-        if binder is not None:
-            return f'<bound method {self.method.__qualname__} of {binder}>'
-        else:
-            return repr(self.method)

@@ -1,10 +1,11 @@
 import sys
+import types
 import itertools
 import collections
-from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type
+from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type, Union as TypeUnion
 
-from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict
-from ._utils import last, type_name, as_type, get_as_value, is_strict_subclass, is_class_in_class_body, instanceoverride
+from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict, HiddenSentinal
+from ._utils import last, type_name, is_type, as_type, get_as_value, copy_if_mutable, is_strict_subclass, is_classdef_in_classdict
 
 
 __all__ = ['Struct', 'BaseVstError', 'FieldVstError', 'UnknownFieldsError']
@@ -27,163 +28,219 @@ class FieldVstError(TypeError):
 
 class UnknownFieldsError(ValueError):
     def __init__(self, typ: Type['Struct'], fields: Sequence[str]):
-        type_name = type_name(typ)
+        typ_name = type_name(typ)
         field_names = ', '.join(f'`{f}`' for f in fields)
         if len(fields) > 1:
-            message = f'The fields {field_names} are not memebrs of {type_name}'
+            message = f'The following fields are not memebrs of {typ_name}: {field_names}'
         else:
-            message = f'The field {field_names} is not a member of {type_name}'
+            message = f'The field {field_names} is not a member of {typ_name}'
         super().__init__(message)
 
 
 class StructMetadata(SerializerMetadata):
+    __slots__ = ('members',)
+
     def __init__(self, *, members: collections.OrderedDict):
-        size = sum(m._heracles_bytesize_() for m in members.values())
+        size = sum(m.byte_size for m in members.values())
         super().__init__(size)
         self.members = members
 
 
 class StructMeta(SerializerMeta):
     def __new__(cls, name: str, bases: Sequence, classdict: MetaDict) -> 'Struct':
-        if hasattr(sys.modules[__name__], 'Struct'):
-            last_serializer = None
-            metamembers = MetaDict(name)
+        last_base = None
+        metamembers = MetaDict(name)  # Use a MetaDict to ensure
 
-            for base in (b for b in bases if is_strict_subclass(b, Serializer)):
-                if not issubclass(base, Struct):
-                    raise TypeError('Struct can only inherit from other structs')
-                elif base is Struct:
-                    continue  # Struct itself has no metadata
-                elif last_serializer and base._heracles_members_():
-                    raise BaseVstError(type_name(last_serializer), type_name(base))
-                elif base._heracles_vst_():
-                    last_serializer = base
-                metamembers.update(base._heracles_members_())
+        # Make sure that our only serializer bases are structs
+        for base in (b for b in bases if is_strict_subclass(b, Serializer)):
+            if not issubclass(base, Struct):
+                raise TypeError('Struct can only inherit from other structs')
+            # Fail if we encountered a VST base in the previous iteration
+            elif last_base:
+                raise BaseVstError(type_name(last_base), type_name(base))
+            elif base.is_vst:
+                last_base = base
+            metamembers.update(base._members_)
 
-            if last_serializer and classdict.members:
-                last_name, last_value = last(classdict.members.items())
-                if last_value._heracles_vst_():
-                    raise BaseVstError(type_name(last_serializer), name)
-            metamembers.update(classdict.members)
+        # Fail if we have a VST base
+        if last_base:
+            last_value = last(classdict.members.values())
+            if last_value.is_vst:
+                raise BaseVstError(type_name(last_base), name)
+        metamembers.update(classdict.members)
 
-            classdict.update({
-                SerializerMeta.METAATTR: StructMetadata(members=metamembers.members),
-            })
+        classdict.update({
+            SerializerMeta.METAATTR: StructMetadata(
+                members=types.MappingProxyType(metamembers)),
+        })
 
-        return super().__new__(
-            cls, name, bases, collections.OrderedDict(classdict))
+        new_type = super().__new__(cls, name, bases, dict(classdict))
+        # Set the owner type for the new type's members
+        for member in classdict.members.values():
+            member.owner = new_type
+        return new_type
 
     def __prepare__(name: str, bases: Sequence, **kwargs) -> MetaDict:
         def on_member_add(classdict: MetaDict, key: str, value: Any):
             if not issubclass(as_type(value), Serializer):
-                return None
-            elif is_class_in_class_body(classdict, key, value):
-                return None
-
+                return value
+            elif is_classdef_in_classdict(classdict, key, value):
+                return value
             members = classdict.members
             if members:
                 last_name, last_value = last(members.items())
-                if last_value._heracles_vst_():
+                if last_value.is_vst:
                     raise FieldVstError(name, key, last_name)
-            return get_as_value(value)
+            if is_type(value):
+                # Avoid creating unnecessary serializer instances where possible
+                if value not in classdict.serializers_cache:
+                    classdict.serializers_cache[value] = get_as_value(value)
+                value = classdict.serializers_cache[value]
+            if type(value).is_hidden:
+                key = HiddenSentinal()
+            members[key] = StructMember(key, value)
+            return MetaDict.ignore
+        mapping = MetaDict(name, on_member_add)
+        mapping.serializers_cache = {}
+        return mapping
 
-        return MetaDict(name, on_member_add)
+    @property
+    def _members_(cls):
+        return cls._metadata_.members
+
+    def __getattr__(cls, name: str) -> Any:
+        if name in cls:
+            return cls._members_[name]
+        return super().__getattr__(name)
 
     def __setattr__(cls, name: str, value: Any) -> None:
-        serializer = cls._heracles_members_().get(name)
+        serializer = cls._members_.get(name)
         if serializer is not None:
             serializer._heracles_validate_(value)
         super().__setattr__(name, value)
 
     def __delattr__(cls, name: str) -> None:
-        if name in cls._heracles_members_():
+        if name in cls._members_:
             raise AttributeError(f'{type_name(cls)}: cannot delete Struct member')
         super().__delattr__(name)
 
     def __contains__(cls, member) -> bool:
-        return member in cls._heracles_members_()
+        return member in cls._members_
 
     def __iter__(cls) -> Iterator:
-        return iter(cls._heracles_members_().keys())
+        return (k for k in cls._members_ if not isinstance(k, MetaDict.Hidden))
 
     def __repr__(cls) -> str:
         return f'<struct {type_name(cls)}>'
 
 
+class StructMember(object):
+    __slots__ = ('name', 'serializer', 'owner')
+
+    def __init__(self, name: str, serializer: Serializer):
+        self.name = name
+        self.serializer = serializer
+
+    @property
+    def is_vst(self) -> bool:
+        return self.serializer._heracles_vst_()
+
+    @property
+    def is_hidden(self) -> bool:
+        return self.serializer._heracles_hidden_()
+
+    @property
+    def byte_size(self) -> int:
+        return self.serializer._heracles_bytesize_()
+
+    @property
+    def offset(self) -> int:
+        return sum(
+            member.byte_size for member in itertools.takewhile(
+                lambda m: m is not self, self.owner._members_.values()))
+
+    def __setattr__(self, name, value):
+        if name not in self.__slots__ or hasattr(self, name):
+            raise AttributeError(f'`{type_name(self)}` object does not support attribute setting')
+        super().__setattr__(name, value)
+
+    def __repr__(self) -> str:
+        return f'<{type_name(self.owner)}.{self.name}: {self.serializer}>'
+
+
 class Struct(Serializer, metaclass=StructMeta):
-    def __init__(self, value: Mapping[str, Serializer] = {}, *args, **kwargs):
+    def __init__(self, value: TypeUnion['Struct', Mapping[str, Serializer]] = {}, *args, **kwargs):
+        # Support constructing from another Struct instance as well as from 
+        # a dict supplying initial values for some or all of the members
         if not isinstance(value, dict) and type(value) != type(self):
             raise TypeError(f'Cannot construct {type_name(self)} from {type_name(value)}')
 
-        for name, serializer in self._heracles_members_().items():
+        for name, member in type(self)._members_.items():
+            if member.is_hidden:
+                continue
             try:
-                setattr(self, name, value[name])
-                if not isinstance(value, Struct):
-                    del value[name]
+                if isinstance(value, Struct):
+                    member_value = getattr(value, name)
+                else:
+                    member_value = value.pop(name)
+                setattr(self, name, member_value)
             except KeyError:
-                # XXX: deepcopy the serializer value instead?
-                setattr(self, name, serializer)
+                setattr(self, name, member.serializer)
 
         if not isinstance(value, Struct) and value:
             raise UnknownFieldsError(self, value.keys())
         super().__init__(self, *args, *kwargs)
 
     @classmethod
-    def _heracles_members_(cls) -> collections.OrderedDict:
-        return cls._heracles_metadata_().members
-
-    @classmethod
     def _heracles_vst_(cls) -> bool:
-        members = cls._heracles_members_()
-        return members and last(members.values())._heracles_vst_()
-
-    @classmethod
-    def offsetof(cls, member: str) -> int:
-        members = cls._heracles_members_()
-        if member not in members:
-            raise UnknownFieldsError(cls, (member,))
-        return sum(members[k]._heracles_bytesize_() 
-            for k in itertools.takewhile(lambda k: k != member, members))
+        try:
+            return last(cls._members_.values()).is_vst
+        except StopIteration:
+            return False
 
     def serialize_value(self, value: 'Struct', settings: Dict[str, Any] = None) -> bytes:
         if type(value) != type(self):
-            raise TypeError('Cannot serialize values of other types')
+            raise TypeError(f'Cannot serialize value of {type_name(value)}')
 
         result = bytearray()
-        for name, serializer in self._heracles_members_().items():
+        for name, member in type(self)._members_.items():
             try:
-                result.extend(serializer.serialize_value(getattr(value, name), settings))
+                if member.is_hidden:
+                    data_piece = member.serializer.serialize(settings)
+                else:
+                    data_piece = member.serializer.serialize_value(
+                        getattr(value, name), settings)
             except ValueError as e:
                 raise ValueError(
                     f'Invalid data in field `{name}` of `{type_name(self)}`: {e.message}')
+            result.extend(data_piece)
         return bytes(result)
 
     def deserialize(self, raw_data: ByteString, settings: Dict[str, Any] = None) -> 'Struct':
-        if len(raw_data) < self._heracles_bytesize_():
-            raise ValueError(
-                f'Raw data size is too small for the struct `{type_name(self)}`')
+        if len(raw_data) < type(self).byte_size:
+            raise ValueError(f'Raw data size is too small for `{type_name(self)}`')
 
         members = {}
-        for name, serializer in self._heracles_members_().items():
-            if serializer._heracles_vst_():
+        for name, member in type(self)._members_.items():
+            if member.is_vst:
                 data_piece = raw_data
             else:
-                data_piece = raw_data[:serializer._heracles_bytesize_()]
-            value = serializer.deserialize(data_piece, settings)
-
-            if not serializer._heracles_hidden_():
+                data_piece = raw_data[:member.byte_size]
+            value = member.serializer.deserialize(data_piece, settings)
+            if not member.is_hidden:
                 members[name] = value
-            
             raw_data = raw_data[len(data_piece):]
         return type(self)(members)
 
     def _heracles_validate_(self, value: Optional['Struct'] = None) -> 'Struct':
         value = self._get_serializer_value(value)
         if type(self) != type(value):
-            raise ValueError('Cannot validate values of other types')
+            raise ValueError(f'Cannot validate value of {type_name(value)}')
 
-        for name, serializer in self._heracles_members_().items():
-            serializer._heracles_validate_(getattr(value, name))
+        for name, member in type(self)._members_.items():
+            if member.is_hidden:
+                continue
+            member.serializer._heracles_validate_(getattr(value, name))
         return value
 
     def _heracles_render_(self, value: Optional['Struct'] = None) -> str:
@@ -192,13 +249,13 @@ class Struct(Serializer, metaclass=StructMeta):
 
         value = self._get_serializer_value(value)
         if type(self) != type(value):
-            raise ValueError('Cannot render values of other types')
+            raise ValueError(f'Cannot render value of {type_name(value)}')
 
         text = ',\n'.join(
                     indent_text(
-                        f'{name}: {serializer._heracles_render_(getattr(value, name))}'
-                        if not serializer._heracles_hidden_() else repr(serializer))
-                    for name, serializer in self._heracles_members_().items()
+                        f'{name}: {member.serializer._heracles_render_(getattr(value, name))}'
+                        if not member.is_hidden else repr(member.serializer))
+                    for name, member in type(self)._members_.items()
                 )
         if text:
             text = f'\n{text}\n'
@@ -207,30 +264,34 @@ class Struct(Serializer, metaclass=StructMeta):
     def _heracles_compare_(self, other: 'Struct', value: Optional['Struct'] = None) -> bool:
         value = self._get_serializer_value(value)
         if type(other) != type(self) != type(value):
-            raise TypeError('Cannot compare values of other types')
+            raise TypeError('Cannot compare values of other structs')
         return all(
-            serializer._heracles_compare_(getattr(other, name), getattr(value, name))
-            for name, serializer in self._heracles_members_().items()
-            if not serializer._heracles_hidden_())
+            member.serializer._heracles_compare_(
+                getattr(other, name), getattr(value, name))
+            for name, member in type(self)._members_.items()
+            if not member.is_hidden)
 
-    @instanceoverride
     def _heracles_bytesize_(self, value: Optional['Struct'] = None) -> int:
         value = self._get_serializer_value(value)
         size = super()._heracles_bytesize_(value)
 
         if self._heracles_vst_():
             # Only the last member can be variable length
-            name, serializer = last(self._heracles_members_().items())
-            size += serializer._heracles_bytesize_(getattr(value, name)) - serializer._heracles_bytesize_()
+            name, member = last(type(self)._members_.items())
+            diff = member.serializer._heracles_bytesize_(getattr(value, name)) - member.byte_size
+            size += diff
         return size
 
-    def __getitem__(self, member) -> Any:
-        # XXX: override __getattribute__ and return values instead of serializers?
-        if member not in self:
-            raise KeyError(f'{member} is not a member of {type_name(self)}')
-        return getattr(self, member)
+    def __getattribute__(self, name: str) -> Any:
+        value = super().__getattribute__(name)
+        # Unwrap serializers that are wrappers around Python types on first access
+        # in order to hide the somewhat inconvenient serializer interface from the user
+        if issubclass(as_type(value), Serializer) and value._heracles_wrapper_() and name in self:
+            value = copy_if_mutable(value.value)
+            setattr(self, name, value)
+        return value
 
-    def __contains__(self, member) -> bool:
+    def __contains__(self, member: str) -> bool:
         return member in type(self)
 
     def __iter__(self) -> Iterator:

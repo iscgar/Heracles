@@ -8,6 +8,10 @@ from ._utils import value_or_default, type_name, as_type, as_iter
 __all__ = ['Endianness', 'Serializer']
 
 
+class HiddenSentinal(object):
+    pass
+
+
 class Endianness(enum.Enum):
     native = '='
     big = '>'
@@ -15,6 +19,8 @@ class Endianness(enum.Enum):
 
 
 class MetaDict(collections.OrderedDict):
+    ignore = object()
+
     def __init__(self, name, onset=None):
         self.name = name
         self.members = collections.OrderedDict()
@@ -23,20 +29,15 @@ class MetaDict(collections.OrderedDict):
 
     def __setitem__(self, key: str, value: Any) -> None:
         if key in self.members:
-            raise KeyError(f'`{key}` overrides an existing member')
-
+            raise KeyError(f'`{key}` overrides an existing member of {self.name}')
         result = self.onset(self, key, value)
-        if result is not None:
-            # Don't add the member to class dict if it's a hidden serializer
-            if issubclass(as_type(result), Serializer) and result._heracles_hidden_():
-                key = f'__heracles_hidden_{self.name}{len(self.members)}_{key}__'
-                self.members[key] = result
-                return
-            self.members[key] = result
-        super().__setitem__(key, value)
+        if result is not self.ignore:
+            super().__setitem__(key, value)
 
 
 class SerializerMetadata(object):
+    __slots__ = ('size',)
+
     def __init__(self, size: int):
         self.size = size
 
@@ -65,6 +66,22 @@ class SerializerMeta(type):
             return Array[size, underlying]
         else:
             raise ValueError(f'Expected an int or a slice, got {type_name(size)}')
+    
+    @property
+    def _metadata_(cls) -> SerializerMetadata:
+        return getattr(cls, SerializerMeta.METAATTR)
+    
+    @property
+    def is_vst(cls) -> bool:
+        return cls._heracles_vst_()
+
+    @property
+    def is_hidden(cls) -> bool:
+        return cls._heracles_hidden_()
+    
+    @property
+    def byte_size(cls) -> int:
+        return cls._metadata_.size
 
     def __call__(cls, *args, settings: Dict[str, Any] = None, **kwargs) -> 'Serializer':
         try:
@@ -79,6 +96,11 @@ class SerializerMeta(type):
 
     def __getitem__(cls, size: TypeUnion[int, slice]):
         return cls.create_array(size, cls)
+    
+    def __setattr__(cls, name, value):
+        if name.startswith('_heracles'):
+            raise AttributeError(f'{type_name(cls)}: Cannot reassign heracles attribute')
+        return super().__setattr__(name, value)
 
 
 class Serializer(metaclass=SerializerMeta):
@@ -88,8 +110,8 @@ class Serializer(metaclass=SerializerMeta):
         self._heracles_validate_(value)
 
     @classmethod
-    def _heracles_metadata_(cls) -> SerializerMetadata:
-        return getattr(cls, SerializerMeta.METAATTR, None)
+    def _heracles_wrapper_(cls):
+        return False
 
     @classmethod
     def _heracles_hidden_(cls) -> bool:
@@ -99,9 +121,11 @@ class Serializer(metaclass=SerializerMeta):
     def _heracles_vst_(cls) -> bool:
         return False
 
-    @classmethod
-    def _heracles_bytesize_(cls, value: Optional[Any] = None) -> int:
-        return cls._heracles_metadata_().size
+    def _heracles_metadata_(self) -> SerializerMetadata:
+        return type(self)._metadata_
+
+    def _heracles_bytesize_(self, value: Optional[Any] = None) -> int:
+        return type(self).byte_size
 
     def _get_serializer_value(self, value: Optional[Any] = None):
         value = value_or_default(value, self)

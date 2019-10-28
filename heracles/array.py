@@ -3,12 +3,14 @@ import itertools
 from typing import Any, Dict, ByteString, Iterable, Iterator, Optional, Sequence, Type, Union as TypeUnion
 
 from .base import Serializer, SerializerMeta, SerializerMetadata
-from ._utils import copy_if_mutable, type_name, as_type, get_as_value, iter_chunks, instanceoverride
+from ._utils import copy_if_mutable, type_name, as_type, get_as_value, iter_chunks
 
 __all__ = ['Array']
 
 
 class ArrayMetadata(SerializerMetadata):
+    __slots__ = ('array_size', 'serializer')
+
     def __init__(self, *, array_size: slice, serializer: Serializer):
         super().__init__(array_size.start * serializer._heracles_bytesize_())
         self.array_size = array_size
@@ -54,31 +56,34 @@ class ArrayMeta(SerializerMeta):
         })
 
     def repr_array_size(cls) -> str:
-        size = cls._heracles_metadata_().array_size
-        if cls._heracles_vst_():
+        size = cls._metadata_.array_size
+        if cls.is_vst:
             max_size = '' if size.stop is None else size.stop
             return f'{size.start}:{max_size}'
         else:
             return f'{size.start}'
 
     def __repr__(cls) -> str:
-        return f'<array <{cls._heracles_metadata_().serializer}> [{cls.repr_array_size()}]>'
+        return f'<array <{cls._metadata_.serializer}> [{cls.repr_array_size()}]>'
 
 
 class Array(Serializer, metaclass=ArrayMeta):
     def __init__(self, value: Sequence = (), *args, **kwargs):
         return super().__init__(value, *args, **kwargs)
-    
+
+    @classmethod
+    def _heracles_wrapper_(cls):
+        return True
+
     @classmethod
     def _heracles_hidden_(cls) -> bool:
-        return cls._heracles_metadata_().serializer._heracles_hidden_()
+        return cls._metadata_.serializer._heracles_hidden_()
 
     @classmethod
     def _heracles_vst_(cls) -> bool:
-        size = cls._heracles_metadata_().array_size
+        size = cls._metadata_.array_size
         return size.start != size.stop
 
-    @instanceoverride
     def _heracles_bytesize_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> int:
         value = self._heracles_validate_(value)
         meta = self._heracles_metadata_()

@@ -1,11 +1,10 @@
 import sys
-import inspect
 import collections
 from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type, Union as TypeUnion
 
 from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict
 from .scalars import *
-from ._utils import first, last, type_name, as_type, get_as_value
+from ._utils import first, last, type_name, as_type, get_as_value, func_params, ParameterKind
 
 __all__ = ['Enum', 'Literal']
 
@@ -14,12 +13,13 @@ class Literal(object): pass
 
 
 class EnumMetadata(SerializerMetadata):
+    __slots__ = ('serializer', 'flags', 'literals')
     _VALID_UNDERLYING_TYPES = (
         u8, u16, u32, u64, i8, i16, i32, i64,
         u8_le, u16_le, u32_le, u64_le, i8_le, i16_le, i32_le, i64_le,
         u8_be, u16_be, u32_be, u64_be, i8_be, i16_be, i32_be, i64_be)
 
-    def __init__(self, *, literals: collections.OrderedDict, underlying: Scalar = i32):
+    def __init__(self, *, literals: collections.OrderedDict, underlying: Scalar = i32, flags: bool = False):
         if underlying not in self._VALID_UNDERLYING_TYPES:
             raise TypeError(f'Invalid underlying type for Enum: {type_name(underlying)}')
         serializer = get_as_value(underlying)
@@ -29,14 +29,14 @@ class EnumMetadata(SerializerMetadata):
         except ValueError as e:
             raise ValueError(f'Invalid value for literal {v}: {e.message}')
         super().__init__(serializer._heracles_bytesize_())
+        self.flags = flags
         self.serializer = serializer
         self.literals = literals
 
 
 class EnumMeta(SerializerMeta):
-    _ENUM_ARGS = (
-        p.name for p in inspect.signature(EnumMetadata.__init__).parameters.values()
-        if p.kind == inspect.Parameter.KEYWORD_ONLY)
+    _ENUM_ARGS = tuple(
+        p.name for p in func_params(EnumMetadata.__init__, ParameterKind.KEYWORD_ONLY))
 
     def __new__(cls, name: str, bases: Sequence, classdict: Dict[str, Any], **kwargs):
         if hasattr(sys.modules[__name__], 'Enum'):
@@ -50,17 +50,17 @@ class EnumMeta(SerializerMeta):
                     EnumMetadata(literals=classdict.members, **args),
             })
 
-        return super().__new__(
-            cls, name, bases, collections.OrderedDict(classdict), **kwargs)
+        return super().__new__(cls, name, bases, dict(classdict), **kwargs)
 
     def __prepare__(name: str, bases: Sequence, **kwargs) -> MetaDict:
         def on_literal_add(classdict: MetaDict, key: str, value: Any):
             if value is not None and not issubclass(as_type(value), (int, Literal)):
-                return None
+                return value
             elif value is None or issubclass(as_type(value), Literal):
                 members = classdict.members
-                return 0 if not members else last(members.values()) + 1
-            return value
+                value = 0 if not members else last(members.values()) + 1
+            classdict.members[key] = value
+            # return MetaDict.ignore
 
         return MetaDict(name, on_literal_add)
 
@@ -80,6 +80,7 @@ class EnumMeta(SerializerMeta):
 
 class Enum(Serializer, metaclass=EnumMeta):
     def __init__(self, value=None, *args, **kwargs):
+        # TODO: Forbid constructing Enum without a value
         if value is None:
             if self.literals():
                 value = first(self.literals().values())

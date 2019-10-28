@@ -1,11 +1,10 @@
 import sys
-import inspect
 import struct
-from typing import Any, ByteString, Dict, Optional, Sequence, Union as TypeUnion
+from typing import Any, ByteString, Dict, Mapping, Optional, Sequence, Union as TypeUnion
 
 from .base import Endianness, Serializer, SerializerMeta, SerializerMetadata
 from .validators import IntRangeValidator, FloatValidator, AsciiCharValidator
-from ._utils import chain, type_name, is_strict_subclass
+from ._utils import chain, type_name, is_strict_subclass, func_params, ParameterKind
 
 __all__ = [
     'Scalar', 'PadByte', 'char', 'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64',
@@ -15,6 +14,7 @@ __all__ = [
 
 
 class ScalarMetadata(SerializerMetadata):
+    __slots__ = ('endianness', 'fmt', 'fmt_spec', 'validator')
     _FORMATTERS_INFO = {
         'c': (1, AsciiCharValidator()),
         'B': (1, IntRangeValidator(0, 255)),
@@ -44,17 +44,16 @@ class ScalarMetadata(SerializerMetadata):
 
 class ScalarMeta(SerializerMeta):
     _SCALAR_ARGS = tuple(
-        p.name for p in inspect.signature(ScalarMetadata.__init__).parameters.values()
-        if p.kind == inspect.Parameter.KEYWORD_ONLY)
+        p.name for p in func_params(ScalarMetadata.__init__, ParameterKind.KEYWORD_ONLY))
 
-    def __new__(cls, name, bases, classdict, **kwargs):
+    def __new__(cls, name: str, bases: Sequence, classdict: Mapping[str, Any], **kwargs):
         if hasattr(sys.modules[__name__], 'Scalar'):
             args = {}
             # Look for required arguments in base classes
             for b in (b for b in bases if is_strict_subclass(b, Scalar)):
                 if args:
                     raise TypeError('Cannot inherit from more than one Scalar base')
-                meta = b._heracles_metadata_()
+                meta = b._metadata_
                 for arg in cls._SCALAR_ARGS:
                     args[arg] = getattr(meta, arg)
             # Override with keyword arguments, if any
@@ -70,6 +69,10 @@ class Scalar(Serializer, metaclass=ScalarMeta):
         kwargs['validator'] = tuple(
             chain(self._heracles_metadata_().validator, kwargs.get('validator')))
         super().__init__(value, *args, **kwargs)
+
+    @classmethod
+    def _heracles_wrapper_(cls):
+        return True
 
     def __int__(self) -> int:
         return int(self.value)
@@ -94,7 +97,7 @@ class u8(Scalar, endianness=Endianness.native, fmt='B'):
             return value[0]
         return value
 
-    def deserialize(self, raw_data, settings: Optional[Dict[str, Any]] = None):
+    def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None):
         value = super().deserialize(raw_data, settings)
         if isinstance(self.value, bytes):
             return bytes((value,))
