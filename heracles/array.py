@@ -2,7 +2,7 @@ import sys
 import itertools
 from typing import Any, Dict, ByteString, Iterable, Iterator, Optional, Sequence, Type, Union as TypeUnion
 
-from .base import Serializer, SerializerMeta, SerializerMetadata
+from .base import Serializer, SerializerMeta, SerializerMetadata, byte_size
 from ._utils import copy_if_mutable, type_name, as_type, get_as_value, iter_chunks
 
 __all__ = ['Array']
@@ -12,7 +12,7 @@ class ArrayMetadata(SerializerMetadata):
     __slots__ = ('array_size', 'serializer')
 
     def __init__(self, *, array_size: slice, serializer: Serializer):
-        super().__init__(array_size.start * serializer._heracles_bytesize_())
+        super().__init__(array_size.start * byte_size(serializer))
         self.array_size = array_size
         self.serializer = serializer
 
@@ -56,7 +56,7 @@ class ArrayMeta(SerializerMeta):
         })
 
     def repr_array_size(cls) -> str:
-        size = cls._metadata_.array_size
+        size = cls.__metadata__.array_size
         if cls.is_vst:
             max_size = '' if size.stop is None else size.stop
             return f'{size.start}:{max_size}'
@@ -64,7 +64,7 @@ class ArrayMeta(SerializerMeta):
             return f'{size.start}'
 
     def __repr__(cls) -> str:
-        return f'<array <{cls._metadata_.serializer}> [{cls.repr_array_size()}]>'
+        return f'<array <{cls.__metadata__.serializer}> [{cls.repr_array_size()}]>'
 
 
 class Array(Serializer, metaclass=ArrayMeta):
@@ -77,17 +77,17 @@ class Array(Serializer, metaclass=ArrayMeta):
 
     @classmethod
     def _heracles_hidden_(cls) -> bool:
-        return cls._metadata_.serializer._heracles_hidden_()
+        return cls.__metadata__.serializer._heracles_hidden_()
 
     @classmethod
     def _heracles_vst_(cls) -> bool:
-        size = cls._metadata_.array_size
+        size = cls.__metadata__.array_size
         return size.start != size.stop
 
     def _heracles_bytesize_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> int:
         value = self._heracles_validate_(value)
         meta = self._heracles_metadata_()
-        return max(meta.array_size.start, len(value)) * meta.serializer._heracles_bytesize_()
+        return max(meta.array_size.start, len(value)) * byte_size(meta.serializer)
 
     def _heracles_validate_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> Sequence:
         value = self._get_serializer_value(value)
@@ -109,7 +109,7 @@ class Array(Serializer, metaclass=ArrayMeta):
                 serialized.extend(serializer.serialize_value(v, settings))
             except ValueError as e:
                 raise ValueError(f'Invalid data in index `{i}` of array: {e.message}')
-        remaining_elements = (self._heracles_bytesize_(value) - len(serialized)) // serializer._heracles_bytesize_()
+        remaining_elements = (byte_size(self, value) - len(serialized)) // byte_size(serializer)
         for _ in range(remaining_elements):
             serialized.extend(serializer.serialize())
         return bytes(serialized)
@@ -132,18 +132,18 @@ class Array(Serializer, metaclass=ArrayMeta):
     def deserialize(self, raw_data: ByteString, settings: Dict[str, Any] = None) -> Sequence:
         size = self._heracles_metadata_().array_size
         serializer = self._heracles_metadata_().serializer
-        min_size = size.start * serializer._heracles_bytesize_()
+        min_size = size.start * byte_size(serializer)
         if min_size > len(raw_data):
             raise ValueError(f'Raw data ({len(raw_data)}) is too short (expected {min_size})')
         if size.stop is not None:
-            max_size = size.stop * serializer._heracles_bytesize_()
+            max_size = size.stop * byte_size(serializer)
             if len(raw_data) > max_size:
                 raise ValueError(f'Raw data ({len(raw_data)}) is too long (expected {max_size})')
-        if len(raw_data) % serializer._heracles_bytesize_() != 0:
+        if len(raw_data) % byte_size(serializer) != 0:
             raise ValueError("Raw data size isn't divisible by array element size")
         values_iterator = (
             serializer.deserialize(chunk, settings)
-            for chunk in iter_chunks(raw_data, serializer._heracles_bytesize_()))
+            for chunk in iter_chunks(raw_data, byte_size(serializer)))
         return self._to_array_repr(values_iterator)
 
     def _heracles_render_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> str:

@@ -28,7 +28,7 @@ class EnumMetadata(SerializerMetadata):
                 serializer._heracles_validate_(v)
         except ValueError as e:
             raise ValueError(f'Invalid value for literal {v}: {e.message}')
-        super().__init__(serializer._heracles_bytesize_())
+        super().__init__(byte_size(serializer))
         self.flags = flags
         self.serializer = serializer
         self.literals = literals
@@ -90,7 +90,7 @@ class Enum(Serializer, metaclass=EnumMeta):
 
     @classmethod
     def literals(cls) -> Mapping[str, int]:
-        return cls._heracles_metadata_().literals
+        return cls.__metadata__.literals
 
     def _heracles_validate_(self, value: Optional[TypeUnion['Enum', int]] = None) -> int:
         value = self._heracles_metadata_().serializer._heracles_validate_(value)

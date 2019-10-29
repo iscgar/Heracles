@@ -53,7 +53,7 @@ class ScalarMeta(SerializerMeta):
             for b in (b for b in bases if is_strict_subclass(b, Scalar)):
                 if args:
                     raise TypeError('Cannot inherit from more than one Scalar base')
-                meta = b._metadata_
+                meta = b.__metadata__
                 for arg in cls._SCALAR_ARGS:
                     args[arg] = getattr(meta, arg)
             # Override with keyword arguments, if any

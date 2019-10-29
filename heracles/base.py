@@ -2,10 +2,10 @@ import enum
 import collections
 from typing import Any, ByteString, Callable, Dict, Iterator, KeysView, Optional, Type, Union as TypeUnion
 
-from ._utils import value_or_default, type_name, as_type, as_iter
+from ._utils import value_or_default, type_name, is_type, as_type, as_iter
 
 
-__all__ = ['Endianness', 'Serializer']
+__all__ = ['Endianness', 'Serializer', 'byte_size']
 
 
 class HiddenSentinal(object):
@@ -68,7 +68,7 @@ class SerializerMeta(type):
             raise ValueError(f'Expected an int or a slice, got {type_name(size)}')
     
     @property
-    def _metadata_(cls) -> SerializerMetadata:
+    def __metadata__(cls) -> SerializerMetadata:
         return getattr(cls, SerializerMeta.METAATTR)
     
     @property
@@ -80,8 +80,8 @@ class SerializerMeta(type):
         return cls._heracles_hidden_()
     
     @property
-    def byte_size(cls) -> int:
-        return cls._metadata_.size
+    def __bytesize__(cls) -> int:
+        return cls.__metadata__.size
 
     def __call__(cls, *args, settings: Dict[str, Any] = None, **kwargs) -> 'Serializer':
         try:
@@ -122,10 +122,10 @@ class Serializer(metaclass=SerializerMeta):
         return False
 
     def _heracles_metadata_(self) -> SerializerMetadata:
-        return type(self)._metadata_
+        return type(self).__metadata__
 
     def _heracles_bytesize_(self, value: Optional[Any] = None) -> int:
-        return type(self).byte_size
+        return type(self).__bytesize__
 
     def _get_serializer_value(self, value: Optional[Any] = None):
         value = value_or_default(value, self)
@@ -172,3 +172,14 @@ class Serializer(metaclass=SerializerMeta):
 
     def __getitem__(self, size: TypeUnion[int, slice]):
         return type(self).create_array(size, self)
+
+
+def byte_size(serializer: TypeUnion[Serializer, Type[Serializer]], value: Optional[Any] = None) -> int:
+    if value is None:
+        try:
+            return serializer.__bytesize__
+        except AttributeError:
+            pass
+    if not isinstance(serializer, Serializer):
+        raise TypeError(f'Expected a Serializer, got {type_name(serializer)}')
+    return serializer._heracles_bytesize_(value)
