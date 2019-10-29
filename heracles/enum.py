@@ -20,7 +20,7 @@ class EnumMetadata(SerializerMetadata):
         u8_le, u16_le, u32_le, u64_le, i8_le, i16_le, i32_le, i64_le,
         u8_be, u16_be, u32_be, u64_be, i8_be, i16_be, i32_be, i64_be)
 
-    def __init__(self, *, literals: collections.OrderedDict, underlying: Scalar = i32, flags: bool = False):
+    def __init__(self, *, literals: collections.OrderedDict, underlying: Type[Scalar] = i32, flags: bool = False):
         if underlying not in self._VALID_UNDERLYING_TYPES:
             raise TypeError(f'Invalid underlying type for Enum: {type_name(underlying)}')
         serializer = get_as_value(underlying)

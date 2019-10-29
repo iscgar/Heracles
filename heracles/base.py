@@ -36,10 +36,10 @@ class MetaDict(collections.OrderedDict):
 
 
 class SerializerMetadata(object):
-    __slots__ = ('size',)
+    __slots__ = ('byte_size',)
 
-    def __init__(self, size: int):
-        self.size = size
+    def __init__(self, byte_size: int):
+        self.byte_size = byte_size
 
     def __setattr__(self, key: str, value: Any):
         if hasattr(self, key):
@@ -73,7 +73,7 @@ class SerializerMeta(type):
 
     @metaclassmethod
     def __bytesize__(cls) -> int:
-        return cls.__metadata__.size
+        return cls.__metadata__.byte_size
 
     @property
     def __isvst__(cls) -> bool:
@@ -101,12 +101,16 @@ class SerializerMeta(type):
     def __getitem__(cls, size: TypeUnion[int, slice]):
         return cls.create_array(size, cls)
 
-    def __setattr__(cls, name: str, value: Any):
-        if name.startswith('_heracles'):
-            raise AttributeError(f'{type_name(cls)}: Cannot assign heracles attribute')
+    @staticmethod
+    def _validate_setattr(obj, name: str):
+        if name.startswith('_heracles') and hasattr(obj, name):
+            raise AttributeError(f'{type_name(obj)}: Cannot reassign heracles attribute `{name}`')
         elif name in Serializer.RESERVED_ATTRS:
             raise AttributeError(
-                f'{type_name(cls)}: {name} is reserved for the heracles implementation')
+                f'{type_name(obj)}: `{name}` is reserved for the heracles implementation')
+
+    def __setattr__(cls, name: str, value: Any):
+        cls._validate_setattr(cls, name)
         return super().__setattr__(name, value)
 
 
@@ -117,9 +121,7 @@ class Serializer(metaclass=SerializerMeta):
             assert isinstance(cls.__metadata__, SerializerMetadata)
         except (AttributeError, AssertionError):
             raise TypeError('Cannot instantiate an abstarct Serializer class')
-        instance = super().__new__(cls)
-        instance.__init__(*args, **kwargs)
-        return instance
+        return super().__new__(cls)
         
     def __init__(self, value: Any, *, validator: Optional[Callable[[Any], None]] = None):
         self._heracles_validator = tuple(as_iter(validator))
@@ -190,6 +192,10 @@ class Serializer(metaclass=SerializerMeta):
 
     def __getitem__(self, size: TypeUnion[int, slice]):
         return type(self).create_array(size, self)
+    
+    def __setattr__(self, name: str, value: Any):
+        type(self)._validate_setattr(self, name)
+        return super().__setattr__(name, value)
 
 
 def isvst(serializer: TypeUnion[Serializer, Type[Serializer]]) -> bool:

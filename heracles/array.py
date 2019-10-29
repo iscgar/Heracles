@@ -55,8 +55,8 @@ class ArrayMeta(SerializerMeta):
                 array_size=size, serializer=get_as_value(serializer))
         })
 
-    def repr_array_size(cls) -> str:
-        size = cls.__metadata__.array_size
+    def _repr_array_size(cls) -> str:
+        size = array_size(cls)
         if isvst(cls):
             max_size = '' if size.stop is None else size.stop
             return f'{size.start}:{max_size}'
@@ -64,7 +64,15 @@ class ArrayMeta(SerializerMeta):
             return f'{size.start}'
 
     def __repr__(cls) -> str:
-        return f'<array <{cls.__metadata__.serializer}> [{cls.repr_array_size()}]>'
+        return f'<array <{cls.__serializer__}> [{cls._repr_array_size()}]>'
+
+    @property
+    def __serializer__(cls) -> slice:
+        return cls.__metadata__.serializer
+
+    @property
+    def __arraysize__(cls) -> slice:
+        return cls.__metadata__.array_size
 
     @property
     def __iswrapper__(cls):
@@ -72,30 +80,32 @@ class ArrayMeta(SerializerMeta):
 
     @property
     def __ishidden__(cls) -> bool:
-        return ishidden(cls.__metadata__.serializer)
+        return ishidden(cls.__serializer__)
 
     @property
     def __isvst__(cls) -> bool:
-        size = cls.__metadata__.array_size
+        size = array_size(cls)
         return size.start != size.stop
 
 
 class Array(Serializer, metaclass=ArrayMeta):
     def __init__(self, value: Sequence = (), *args, **kwargs):
+        # Simple heuristic to forbid iterators
+        if not hasattr(value, '__len__'):
+            raise TypeError(f'Expected a sequence, got {type_name(value)}')
         return super().__init__(value, *args, **kwargs)
 
     def __bytesize__(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> int:
         value = self._heracles_validate_(value)
-        meta = self.__metadata__
-        return max(meta.array_size.start, len(value)) * byte_size(meta.serializer)
+        return max(array_size(self).start, len(value)) * byte_size(type(self).__serializer__)
 
     def _heracles_validate_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> Sequence:
         value = self._get_serializer_value(value)
-        size = self.__metadata__.array_size
+        size = array_size(self)
         if size.stop is not None and len(value) > size.stop:
             raise ValueError('Assigned value size exceeds array size')
 
-        serializer = self.__metadata__.serializer
+        serializer = type(self).__serializer__
         for i in value:
             serializer._heracles_validate_(i)
         return value
@@ -103,7 +113,7 @@ class Array(Serializer, metaclass=ArrayMeta):
     def serialize_value(self, value: TypeUnion['Array', Sequence], settings: Dict[str, Any] = None) -> bytes:
         value = self._heracles_validate_(value)
         serialized = bytearray()
-        serializer = self.__metadata__.serializer
+        serializer = type(self).__serializer__
         for i, v in enumerate(value):
             try:
                 serialized.extend(serializer.serialize_value(v, settings))
@@ -118,7 +128,7 @@ class Array(Serializer, metaclass=ArrayMeta):
         # Try to guess the best representation of the array for the user by inspecting
         # the type of the initial value, if exists, or of the underlying serializer
         # otherwise, falling back to a default representation if we couldn't guess.
-        check_value = self.value if self.value else self.__metadata__.serializer.value
+        check_value = self.value if self.value else type(self).__serializer__.value
         if type(value) == type(check_value):
             return value
         elif isinstance(check_value, bytes):
@@ -130,8 +140,8 @@ class Array(Serializer, metaclass=ArrayMeta):
             return type(self.value)(value)
 
     def deserialize(self, raw_data: ByteString, settings: Dict[str, Any] = None) -> Sequence:
-        size = self.__metadata__.array_size
-        serializer = self.__metadata__.serializer
+        size = array_size(self)
+        serializer = type(self).__serializer__
         min_size = size.start * byte_size(serializer)
         if min_size > len(raw_data):
             raise ValueError(f'Raw data ({len(raw_data)}) is too short (expected {min_size})')
@@ -148,27 +158,27 @@ class Array(Serializer, metaclass=ArrayMeta):
 
     def _heracles_render_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> str:
         value = self._heracles_validate_(value)
-        serializer = self.__metadata__.serializer
-        return f'{serializer}[{type(self).repr_array_size()}] {repr(self._to_array_repr(value))}'
+        serializer = type(self).__serializer__
+        return f'{serializer}[{type(self)._repr_array_size()}] {repr(self._to_array_repr(value))}'
     
     def _heracles_compare_(self, other: TypeUnion['Array', Sequence], value: Optional[TypeUnion['Array', Sequence]] = None) -> bool:
         if other is None:
             return False
         value = self._get_serializer_value(value)
-        size = self.__metadata__.array_size
+        size = array_size(self)
         if size.stop is not None and max(len(other), len(value)) > size.stop:
             return False
         return all(a == b for a, b in itertools.zip_longest(
-            value, other, fillvalue=self.__metadata__.serializer._get_serializer_value()))
+            value, other, fillvalue=type(self).__serializer__._get_serializer_value()))
 
     def __len__(self) -> int:
-        return max(self.__metadata__.array_size.start, len(self.value))
+        return max(array_size(self).start, len(self.value))
 
     def __getitem__(self, idx) -> Any:
         if idx < 0:
             idx = len(self) - idx
-        size = self.__metadata__.array_size
-        serializer = self.__metadata__.serializer
+        size = array_size(self)
+        serializer = type(self).__serializer__
         if idx < 0 or size.stop is not None and idx >= size.stop:
             raise IndexError('Array index out of range')
         try:
@@ -178,3 +188,7 @@ class Array(Serializer, metaclass=ArrayMeta):
 
     def __iter__(self) -> Iterator:
         return (self[i] for i in range(len(self)))
+
+
+def array_size(array: Array) -> slice:
+    return as_type(array).__arraysize__
