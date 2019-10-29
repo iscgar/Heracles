@@ -20,10 +20,10 @@ class BaseVstError(TypeError):
 
 
 class FieldVstError(TypeError):
-    def __init__(self, type_name: str, previous_vst: str, vst_name: str):
+    def __init__(self, type_name: str, previous_vst: str, new_member: str):
         super().__init__(
-            f'Field {previous_vst} of type {type_name} is variable size and'
-            f' must be the last member, but {vst_name} was defined after it')
+            f'Field {type_name}.{previous_vst} is variable size and must be the'
+            f' last member, but {type_name}.{new_member} was defined after it')
 
 
 class UnknownFieldsError(ValueError):
@@ -48,35 +48,17 @@ class StructMetadata(SerializerMetadata):
 
 class StructMeta(SerializerMeta):
     def __new__(cls, name: str, bases: Sequence, classdict: MetaDict) -> 'Struct':
-        last_base = None
-        metamembers = MetaDict(name)  # Use a MetaDict to ensure
-
         # Make sure that our only serializer bases are structs
         for base in (b for b in bases if is_strict_subclass(b, Serializer)):
-            if not issubclass(base, Struct):
-                raise TypeError('Struct can only inherit from other structs')
-            # Fail if we encountered a VST base in the previous iteration
-            elif last_base:
-                raise BaseVstError(type_name(last_base), type_name(base))
-            elif base.is_vst:
-                last_base = base
-            metamembers.update(base._members_)
-
-        # Fail if we have a VST base
-        if last_base:
-            last_value = last(classdict.members.values())
-            if last_value.is_vst:
-                raise BaseVstError(type_name(last_base), name)
-        metamembers.update(classdict.members)
-
-        classdict.update({
-            SerializerMeta.METAATTR: StructMetadata(
-                members=types.MappingProxyType(metamembers)),
-        })
+            if base is not Struct:
+                raise TypeError('structs can only inherit directly from Struct')
+        classdict[SerializerMeta.METAATTR] = StructMetadata(
+            members=types.MappingProxyType(
+                classdict.members))
 
         new_type = super().__new__(cls, name, bases, dict(classdict))
         # Set the owner type for the new type's members
-        for member in classdict.members.values():
+        for member in new_type._members_.values():
             member.owner = new_type
         return new_type
 
@@ -86,20 +68,27 @@ class StructMeta(SerializerMeta):
                 return value
             elif is_classdef_in_classdict(classdict, key, value):
                 return value
+
             members = classdict.members
-            if members:
+            try:
+                # Ensure that only the last member is VST
                 last_name, last_value = last(members.items())
                 if last_value.is_vst:
-                    raise FieldVstError(name, key, last_name)
+                    raise FieldVstError(name, last_name, key)
+            except StopIteration:
+                pass
+
             if is_type(value):
                 # Avoid creating unnecessary serializer instances where possible
                 if value not in classdict.serializers_cache:
                     classdict.serializers_cache[value] = get_as_value(value)
                 value = classdict.serializers_cache[value]
+
             if type(value).is_hidden:
                 key = HiddenSentinal()
             members[key] = StructMember(key, value)
             return MetaDict.ignore
+
         mapping = MetaDict(name, on_member_add)
         mapping.serializers_cache = {}
         return mapping
