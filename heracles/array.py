@@ -2,7 +2,7 @@ import sys
 import itertools
 from typing import Any, Dict, ByteString, Iterable, Iterator, Optional, Sequence, Type, Union as TypeUnion
 
-from .base import Serializer, SerializerMeta, SerializerMetadata, byte_size
+from .base import Serializer, SerializerMeta, SerializerMetadata, byte_size, ishidden, isvst
 from ._utils import copy_if_mutable, type_name, as_type, get_as_value, iter_chunks
 
 __all__ = ['Array']
@@ -47,7 +47,7 @@ class ArrayMeta(SerializerMeta):
             raise TypeError(f'Array element type must be a Serializer')
         # Variable-sized arrays rely on assigned values to function, so hidden serializers are
         # invalid in that context because they cannot be assigned
-        elif serializer._heracles_hidden_() and size.start != size.stop:
+        elif ishidden(serializer) and size.start != size.stop:
             raise ValueError(f'Array of {type_name(serializer)} cannot be variable size')
 
         return type(type_name(cls), (cls,), {
@@ -57,7 +57,7 @@ class ArrayMeta(SerializerMeta):
 
     def repr_array_size(cls) -> str:
         size = cls.__metadata__.array_size
-        if cls.is_vst:
+        if isvst(cls):
             max_size = '' if size.stop is None else size.stop
             return f'{size.start}:{max_size}'
         else:
@@ -66,36 +66,36 @@ class ArrayMeta(SerializerMeta):
     def __repr__(cls) -> str:
         return f'<array <{cls.__metadata__.serializer}> [{cls.repr_array_size()}]>'
 
+    @property
+    def __iswrapper__(cls):
+        return True
+
+    @property
+    def __ishidden__(cls) -> bool:
+        return ishidden(cls.__metadata__.serializer)
+
+    @property
+    def __isvst__(cls) -> bool:
+        size = cls.__metadata__.array_size
+        return size.start != size.stop
+
 
 class Array(Serializer, metaclass=ArrayMeta):
     def __init__(self, value: Sequence = (), *args, **kwargs):
         return super().__init__(value, *args, **kwargs)
 
-    @classmethod
-    def _heracles_wrapper_(cls):
-        return True
-
-    @classmethod
-    def _heracles_hidden_(cls) -> bool:
-        return cls.__metadata__.serializer._heracles_hidden_()
-
-    @classmethod
-    def _heracles_vst_(cls) -> bool:
-        size = cls.__metadata__.array_size
-        return size.start != size.stop
-
-    def _heracles_bytesize_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> int:
+    def __bytesize__(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> int:
         value = self._heracles_validate_(value)
-        meta = self._heracles_metadata_()
+        meta = self.__metadata__
         return max(meta.array_size.start, len(value)) * byte_size(meta.serializer)
 
     def _heracles_validate_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> Sequence:
         value = self._get_serializer_value(value)
-        size = self._heracles_metadata_().array_size
+        size = self.__metadata__.array_size
         if size.stop is not None and len(value) > size.stop:
             raise ValueError('Assigned value size exceeds array size')
 
-        serializer = self._heracles_metadata_().serializer
+        serializer = self.__metadata__.serializer
         for i in value:
             serializer._heracles_validate_(i)
         return value
@@ -103,7 +103,7 @@ class Array(Serializer, metaclass=ArrayMeta):
     def serialize_value(self, value: TypeUnion['Array', Sequence], settings: Dict[str, Any] = None) -> bytes:
         value = self._heracles_validate_(value)
         serialized = bytearray()
-        serializer = self._heracles_metadata_().serializer
+        serializer = self.__metadata__.serializer
         for i, v in enumerate(value):
             try:
                 serialized.extend(serializer.serialize_value(v, settings))
@@ -118,7 +118,7 @@ class Array(Serializer, metaclass=ArrayMeta):
         # Try to guess the best representation of the array for the user by inspecting
         # the type of the initial value, if exists, or of the underlying serializer
         # otherwise, falling back to a default representation if we couldn't guess.
-        check_value = self.value if self.value else self._heracles_metadata_().serializer.value
+        check_value = self.value if self.value else self.__metadata__.serializer.value
         if type(value) == type(check_value):
             return value
         elif isinstance(check_value, bytes):
@@ -130,8 +130,8 @@ class Array(Serializer, metaclass=ArrayMeta):
             return type(self.value)(value)
 
     def deserialize(self, raw_data: ByteString, settings: Dict[str, Any] = None) -> Sequence:
-        size = self._heracles_metadata_().array_size
-        serializer = self._heracles_metadata_().serializer
+        size = self.__metadata__.array_size
+        serializer = self.__metadata__.serializer
         min_size = size.start * byte_size(serializer)
         if min_size > len(raw_data):
             raise ValueError(f'Raw data ({len(raw_data)}) is too short (expected {min_size})')
@@ -148,27 +148,27 @@ class Array(Serializer, metaclass=ArrayMeta):
 
     def _heracles_render_(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> str:
         value = self._heracles_validate_(value)
-        serializer = self._heracles_metadata_().serializer
+        serializer = self.__metadata__.serializer
         return f'{serializer}[{type(self).repr_array_size()}] {repr(self._to_array_repr(value))}'
     
     def _heracles_compare_(self, other: TypeUnion['Array', Sequence], value: Optional[TypeUnion['Array', Sequence]] = None) -> bool:
         if other is None:
             return False
         value = self._get_serializer_value(value)
-        size = self._heracles_metadata_().array_size
+        size = self.__metadata__.array_size
         if size.stop is not None and max(len(other), len(value)) > size.stop:
             return False
         return all(a == b for a, b in itertools.zip_longest(
-            value, other, fillvalue=self._heracles_metadata_().serializer._get_serializer_value()))
+            value, other, fillvalue=self.__metadata__.serializer._get_serializer_value()))
 
     def __len__(self) -> int:
-        return max(self._heracles_metadata_().array_size.start, len(self.value))
+        return max(self.__metadata__.array_size.start, len(self.value))
 
     def __getitem__(self, idx) -> Any:
         if idx < 0:
             idx = len(self) - idx
-        size = self._heracles_metadata_().array_size
-        serializer = self._heracles_metadata_().serializer
+        size = self.__metadata__.array_size
+        serializer = self.__metadata__.serializer
         if idx < 0 or size.stop is not None and idx >= size.stop:
             raise IndexError('Array index out of range')
         try:

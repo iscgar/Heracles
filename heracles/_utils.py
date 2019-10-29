@@ -3,6 +3,8 @@ import inspect
 import itertools
 from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence, Type, Union as TypeUnion
 
+__all__ = ['classproperty']
+
 
 ParameterKind = type(inspect.Parameter.KEYWORD_ONLY)
 
@@ -106,3 +108,33 @@ def is_immutable(value: Any) -> bool:
 def copy_if_mutable(value: Any) -> Any:
     """ Returns a copy of a value if mutable, otherwise returns the original value """
     return copy.deepcopy(value) if not is_immutable(value) else value
+
+
+class metaclassmethod(object):
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        return self.func.__get__(instance, owner)
+
+    def __set__(self, instance, value):
+        raise AttributeError('Cannot set metaclass method')
+
+    def __delete__(self, instance):
+        raise AttributeError('Cannot delete metaclass method')
+
+
+class classproperty(object):
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, instance, owner=None):
+        if owner is None:
+            if instance is None:
+                raise TypeError(
+                    f"descriptor '{type_name(self)}' for '{type_name(self.func)}' "
+                     "needs either an object or a type")
+            owner = type(instance)
+        return self.func.__get__(owner, owner)()

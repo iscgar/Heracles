@@ -7,6 +7,7 @@ from .enum import *
 # from .bitfield import *
 # from .union import *
 from .validators import *
+from ._utils import *
 
 # Info
 __package__ = __name__

@@ -4,7 +4,7 @@ from typing import Any, ByteString, Dict, Mapping, Optional, Sequence, Union as 
 
 from .base import Endianness, Serializer, SerializerMeta, SerializerMetadata
 from .validators import IntRangeValidator, FloatValidator, AsciiCharValidator
-from ._utils import chain, type_name, is_strict_subclass, func_params, ParameterKind
+from ._utils import chain, type_name, is_strict_subclass, func_params, ParameterKind, classproperty
 
 __all__ = [
     'Scalar', 'PadByte', 'char', 'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64',
@@ -50,7 +50,11 @@ class ScalarMeta(SerializerMeta):
         if hasattr(sys.modules[__name__], 'Scalar'):
             args = {}
             # Look for required arguments in base classes
-            for b in (b for b in bases if is_strict_subclass(b, Scalar)):
+            for b in (b for b in bases if is_strict_subclass(b, Serializer)):
+                if not issubclass(b, Scalar):
+                    raise TypeError('Cannot inherit from non-Scalar serializer')
+                elif b is Scalar:
+                    continue # Scalar itself has no metadata
                 if args:
                     raise TypeError('Cannot inherit from more than one Scalar base')
                 meta = b.__metadata__
@@ -63,16 +67,15 @@ class ScalarMeta(SerializerMeta):
             classdict[SerializerMeta.METAATTR] = ScalarMetadata(**args)
         return super().__new__(cls, name, bases, classdict, **kwargs)
 
+    @property
+    def __iswrapper__(cls) -> bool:
+        return True
+
 
 class Scalar(Serializer, metaclass=ScalarMeta):
     def __init__(self, value: TypeUnion[int, float] = 0, *args, **kwargs):
-        kwargs['validator'] = tuple(
-            chain(self._heracles_metadata_().validator, kwargs.get('validator')))
-        super().__init__(value, *args, **kwargs)
-
-    @classmethod
-    def _heracles_wrapper_(cls):
-        return True
+        super().__init__(value, *args, validator=chain(
+            self.__metadata__.validator, kwargs.pop('validator', None)), **kwargs)
 
     def __int__(self) -> int:
         return int(self.value)
@@ -82,10 +85,10 @@ class Scalar(Serializer, metaclass=ScalarMeta):
 
     def serialize_value(self, value: TypeUnion['Scalar', int, float], settings: Optional[Dict[str, Any]] = None) -> bytes:
         value = self._heracles_validate_(value)
-        return struct.pack(self._heracles_metadata_().fmt_spec, value)
+        return struct.pack(self.__metadata__.fmt_spec, value)
 
     def deserialize(self, raw_data: ByteString, settings: Optional[Dict[str, Any]] = None) -> TypeUnion[int, float, bytes]:
-        value = struct.unpack(self._heracles_metadata_().fmt_spec, raw_data)[0]
+        value = struct.unpack(self.__metadata__.fmt_spec, raw_data)[0]
         return self._heracles_validate_(value)
 
 
@@ -170,8 +173,8 @@ class char(Scalar, endianness=Endianness.native, fmt='c'):
 
 
 class PadByte(u8):
-    @classmethod
-    def _heracles_hidden_(cls) -> bool:
+    @classproperty
+    def __ishidden__(cls) -> bool:
         return True
 
     def _heracles_validate_(self, value: Optional[TypeUnion[int, bytes]] = None) -> int:

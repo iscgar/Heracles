@@ -2,14 +2,15 @@ import sys
 import collections
 from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type, Union as TypeUnion
 
-from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict
+from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict, byte_size
 from .scalars import *
 from ._utils import first, last, type_name, as_type, get_as_value, func_params, ParameterKind
 
-__all__ = ['Enum', 'Literal']
+__all__ = ['Enum', 'auto']
 
 
-class Literal(object): pass
+class auto(object):
+    pass
 
 
 class EnumMetadata(SerializerMetadata):
@@ -54,15 +55,24 @@ class EnumMeta(SerializerMeta):
 
     def __prepare__(name: str, bases: Sequence, **kwargs) -> MetaDict:
         def on_literal_add(classdict: MetaDict, key: str, value: Any):
-            if value is not None and not issubclass(as_type(value), (int, Literal)):
+            if not isinstance(value, (int, auto)):
                 return value
-            elif value is None or issubclass(as_type(value), Literal):
-                members = classdict.members
-                value = 0 if not members else last(members.values()) + 1
+            elif isinstance(value, auto):
+                try:
+                    value = last(classdict.members.values()) + 1
+                except StopIteration:
+                    value = 0
+            # TODO: Create enum instances
             classdict.members[key] = value
-            # return MetaDict.ignore
+            return MetaDict.ignore
 
         return MetaDict(name, on_literal_add)
+
+    def __getattr__(cls, name: str) -> Any:
+        try:
+            return cls.literals()[name]
+        except KeyError:
+            return super().__getattr__(name)
 
     def __setattr__(cls, name: str, value: Any) -> None:
         if name in cls.literals():
@@ -93,18 +103,18 @@ class Enum(Serializer, metaclass=EnumMeta):
         return cls.__metadata__.literals
 
     def _heracles_validate_(self, value: Optional[TypeUnion['Enum', int]] = None) -> int:
-        value = self._heracles_metadata_().serializer._heracles_validate_(value)
+        value = self.__metadata__.serializer._heracles_validate_(value)
         # TODO: flags
         if value not in self.literals().values():
             raise ValueError('value is not one of the enum literals')
         return value
 
     def serialize_value(self, value: Optional[TypeUnion['Enum', int]], settings: Dict[str, Any] = None) -> bytes:
-        return self._heracles_metadata_().serializer.serialize_value(value, settings)
+        return self.__metadata__.serializer.serialize_value(value, settings)
 
     # TODO: Return enum instance (also consider making literls Enum instances)
     def deserialize(self, raw_data: ByteString, settings: Dict[str, Any] = None) -> int:
-        return self._heracles_metadata_().serializer.deserialize(raw_data, settings)
+        return self.__metadata__.serializer.deserialize(raw_data, settings)
 
     def get_literal_name(self, literal: int) -> str:
         # TODO: flags
@@ -116,7 +126,7 @@ class Enum(Serializer, metaclass=EnumMeta):
         return f'{type_name(self)}.{self.get_literal_name(value)} ({value})'
 
     def _heracles_compare_(self, other: TypeUnion['Enum', int], value: Optional[TypeUnion['Enum', int]] = None) -> bool:
-        return self._heracles_metadata_().serializer._heracles_compare_(other, value)
+        return self.__metadata__.serializer._heracles_compare_(other, value)
 
     def __int__(self) -> int:
         return self.value

@@ -4,19 +4,11 @@ import itertools
 import collections
 from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type, Union as TypeUnion
 
-from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict, HiddenSentinal, byte_size
+from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict, HiddenSentinal, byte_size, isvst, ishidden, iswrapper
 from ._utils import last, type_name, is_type, as_type, get_as_value, copy_if_mutable, is_strict_subclass, is_classdef_in_classdict
 
 
-__all__ = ['Struct', 'BaseVstError', 'FieldVstError', 'UnknownFieldsError']
-
-
-class BaseVstError(TypeError):
-    def __init__(self, vst_base_name: str, vst_name: str):
-        super().__init__(
-            f'Base struct {vst_base_name} is variable size and must be the last'
-            f' one with memebers in the inheritance chain, but {vst_name} was'
-            ' found after it')
+__all__ = ['Struct', 'FieldVstError', 'UnknownFieldsError']
 
 
 class FieldVstError(TypeError):
@@ -53,8 +45,7 @@ class StructMeta(SerializerMeta):
             if base is not Struct:
                 raise TypeError('structs can only inherit from Struct')
         classdict[SerializerMeta.METAATTR] = StructMetadata(
-            members=types.MappingProxyType(
-                classdict.members))
+            members=types.MappingProxyType(classdict.members))
 
         new_type = super().__new__(cls, name, bases, dict(classdict))
         # Set the owner type for the new type's members
@@ -73,7 +64,7 @@ class StructMeta(SerializerMeta):
             try:
                 # Ensure that only the last member is VST
                 last_name, last_value = last(members.items())
-                if last_value.is_vst:
+                if isvst(last_value):
                     raise FieldVstError(name, last_name, key)
             except StopIteration:
                 pass
@@ -84,7 +75,7 @@ class StructMeta(SerializerMeta):
                     classdict.serializers_cache[value] = get_as_value(value)
                 value = classdict.serializers_cache[value]
 
-            if type(value).is_hidden:
+            if ishidden(value):
                 key = HiddenSentinal()
             members[key] = StructMember(key, value)
             return MetaDict.ignore
@@ -92,6 +83,13 @@ class StructMeta(SerializerMeta):
         mapping = MetaDict(name, on_member_add)
         mapping.serializers_cache = {}
         return mapping
+
+    @property
+    def __isvst__(cls) -> bool:
+        try:
+            return isvst(last(cls.__members__.values()))
+        except StopIteration:
+            return False
 
     @property
     def __members__(cls):
@@ -131,16 +129,19 @@ class StructMember(object):
         self.serializer = serializer
 
     @property
-    def is_vst(self) -> bool:
-        return self.serializer._heracles_vst_()
+    def __isvst__(self) -> bool:
+        return isvst(self.serializer)
 
     @property
-    def is_hidden(self) -> bool:
-        return self.serializer._heracles_hidden_()
+    def __ishidden__(self) -> bool:
+        return ishidden(self.serializer)
 
     @property
-    def __bytesize__(self) -> int:
-        return byte_size(self.serializer)
+    def __iswrapper__(self) -> bool:
+        return iswrapper(self.serializer)
+
+    def __bytesize__(self, value: Optional[Any] = None) -> int:
+        return byte_size(self.serializer, value)
 
     @property
     def offset(self) -> int:
@@ -164,7 +165,7 @@ class Struct(Serializer, metaclass=StructMeta):
             raise TypeError(f'Cannot construct {type_name(self)} from {type_name(value)}')
 
         for name, member in type(self).__members__.items():
-            if member.is_hidden:
+            if ishidden(member):
                 continue
             try:
                 if isinstance(value, Struct):
@@ -179,13 +180,6 @@ class Struct(Serializer, metaclass=StructMeta):
             raise UnknownFieldsError(self, value.keys())
         super().__init__(self, *args, *kwargs)
 
-    @classmethod
-    def _heracles_vst_(cls) -> bool:
-        try:
-            return last(cls.__members__.values()).is_vst
-        except StopIteration:
-            return False
-
     def serialize_value(self, value: 'Struct', settings: Dict[str, Any] = None) -> bytes:
         if type(value) != type(self):
             raise TypeError(f'Cannot serialize value of {type_name(value)}')
@@ -193,7 +187,7 @@ class Struct(Serializer, metaclass=StructMeta):
         result = bytearray()
         for name, member in type(self).__members__.items():
             try:
-                if member.is_hidden:
+                if ishidden(member):
                     data_piece = member.serializer.serialize(settings)
                 else:
                     data_piece = member.serializer.serialize_value(
@@ -210,12 +204,12 @@ class Struct(Serializer, metaclass=StructMeta):
 
         members = {}
         for name, member in type(self).__members__.items():
-            if member.is_vst:
+            if isvst(member):
                 data_piece = raw_data
             else:
                 data_piece = raw_data[:byte_size(member)]
             value = member.serializer.deserialize(data_piece, settings)
-            if not member.is_hidden:
+            if not ishidden(member):
                 members[name] = value
             raw_data = raw_data[len(data_piece):]
         return type(self)(members)
@@ -226,7 +220,7 @@ class Struct(Serializer, metaclass=StructMeta):
             raise ValueError(f'Cannot validate value of {type_name(value)}')
 
         for name, member in type(self).__members__.items():
-            if member.is_hidden:
+            if ishidden(member):
                 continue
             member.serializer._heracles_validate_(getattr(value, name))
         return value
@@ -242,7 +236,7 @@ class Struct(Serializer, metaclass=StructMeta):
         text = ',\n'.join(
                     indent_text(
                         f'{name}: {member.serializer._heracles_render_(getattr(value, name))}'
-                        if not member.is_hidden else repr(member.serializer))
+                        if not ishidden(member) else repr(member.serializer))
                     for name, member in type(self).__members__.items()
                 )
         if text:
@@ -257,13 +251,13 @@ class Struct(Serializer, metaclass=StructMeta):
             member.serializer._heracles_compare_(
                 getattr(other, name), getattr(value, name))
             for name, member in type(self).__members__.items()
-            if not member.is_hidden)
+            if not ishidden(member))
 
-    def _heracles_bytesize_(self, value: Optional['Struct'] = None) -> int:
+    def __bytesize__(self, value: Optional['Struct'] = None) -> int:
         value = self._get_serializer_value(value)
         size = byte_size(type(self))
 
-        if self._heracles_vst_():
+        if isvst(self):
             # Only the last member can be variable length
             name, member = last(type(self).__members__.items())
             diff = byte_size(member.serializer, getattr(value, name)) - byte_size(member)
@@ -274,7 +268,7 @@ class Struct(Serializer, metaclass=StructMeta):
         value = super().__getattribute__(name)
         # Unwrap serializers that are wrappers around Python types on first access
         # in order to hide the somewhat inconvenient serializer interface from the user
-        if issubclass(as_type(value), Serializer) and value._heracles_wrapper_() and name in self:
+        if isinstance(value, Serializer) and iswrapper(value) and name in self:
             value = copy_if_mutable(value.value)
             setattr(self, name, value)
         return value

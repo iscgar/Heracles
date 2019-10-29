@@ -2,7 +2,7 @@ import enum
 import collections
 from typing import Any, ByteString, Callable, Dict, Iterator, KeysView, Optional, Type, Union as TypeUnion
 
-from ._utils import value_or_default, type_name, is_type, as_type, as_iter
+from ._utils import value_or_default, type_name, is_type, as_type, as_iter, metaclassmethod
 
 
 __all__ = ['Endianness', 'Serializer', 'byte_size']
@@ -58,37 +58,41 @@ class SerializerMetadata(object):
 
 class SerializerMeta(type):
     METAATTR = '__heracles_metadata'
+    RESERVED_ATTRS = ('__metadata__', '__bytesize__', '__ishidden__', '__isvst__', '__iswrapper__', METAATTR)
 
     @staticmethod
     def create_array(size: TypeUnion[int, slice], underlying: Type['Serializer']):
         from .array import Array
-        if isinstance(size, (int, slice)):
-            return Array[size, underlying]
-        else:
+        if not isinstance(size, (int, slice)):
             raise ValueError(f'Expected an int or a slice, got {type_name(size)}')
+        return Array[size, underlying]
     
     @property
     def __metadata__(cls) -> SerializerMetadata:
         return getattr(cls, SerializerMeta.METAATTR)
-    
-    @property
-    def is_vst(cls) -> bool:
-        return cls._heracles_vst_()
 
-    @property
-    def is_hidden(cls) -> bool:
-        return cls._heracles_hidden_()
-    
-    @property
+    @metaclassmethod
     def __bytesize__(cls) -> int:
         return cls.__metadata__.size
+
+    @property
+    def __isvst__(cls) -> bool:
+        return False
+
+    @property
+    def __ishidden__(cls) -> bool:
+        return False
+
+    @property
+    def __iswrapper__(cls) -> bool:
+        return False
 
     def __call__(cls, *args, settings: Dict[str, Any] = None, **kwargs) -> 'Serializer':
         try:
             if settings is not None:
                 kwargs['settings'] = settings
             return super().__call__(*args, **kwargs)
-        except Exception:
+        except Exception as e:
             if not kwargs and len(args) == 1 and isinstance(args[0], bytes):
                 # TODO: Don't create an unnecessary instance
                 return cls().deserialize(args[0], settings=settings)
@@ -96,36 +100,50 @@ class SerializerMeta(type):
 
     def __getitem__(cls, size: TypeUnion[int, slice]):
         return cls.create_array(size, cls)
-    
-    def __setattr__(cls, name, value):
+
+    def __setattr__(cls, name: str, value: Any):
         if name.startswith('_heracles'):
-            raise AttributeError(f'{type_name(cls)}: Cannot reassign heracles attribute')
+            raise AttributeError(f'{type_name(cls)}: Cannot assign heracles attribute')
+        elif name in Serializer.RESERVED_ATTRS:
+            raise AttributeError(
+                f'{type_name(cls)}: {name} is reserved for the heracles implementation')
         return super().__setattr__(name, value)
 
 
 class Serializer(metaclass=SerializerMeta):
+    def __new__(cls, *args, **kwargs):
+        # Make sure we have metadata
+        try:
+            assert isinstance(cls.__metadata__, SerializerMetadata)
+        except (AttributeError, AssertionError):
+            raise TypeError('Cannot instantiate an abstarct Serializer class')
+        instance = super().__new__(cls)
+        instance.__init__(*args, **kwargs)
+        return instance
+        
     def __init__(self, value: Any, *, validator: Optional[Callable[[Any], None]] = None):
         self._heracles_validator = tuple(as_iter(validator))
         self._heracles_value = value
         self._heracles_validate_(value)
 
-    @classmethod
-    def _heracles_wrapper_(cls):
-        return False
-
-    @classmethod
-    def _heracles_hidden_(cls) -> bool:
-        return False
-
-    @classmethod
-    def _heracles_vst_(cls) -> bool:
-        return False
-
-    def _heracles_metadata_(self) -> SerializerMetadata:
+    @property
+    def __metadata__(self) -> SerializerMetadata:
         return type(self).__metadata__
 
-    def _heracles_bytesize_(self, value: Optional[Any] = None) -> int:
-        return type(self).__bytesize__
+    @property
+    def __isvst__(self) -> bool:
+        return type(self).__isvst__
+
+    @property
+    def __ishidden__(self) -> bool:
+        return type(self).__ishidden__
+
+    @property
+    def __iswrapper__(self) -> bool:
+        return type(self).__iswrapper__
+
+    def __bytesize__(self, value: Optional[Any] = None) -> int:
+        return type(self).__bytesize__()
 
     def _get_serializer_value(self, value: Optional[Any] = None):
         value = value_or_default(value, self)
@@ -174,12 +192,32 @@ class Serializer(metaclass=SerializerMeta):
         return type(self).create_array(size, self)
 
 
-def byte_size(serializer: TypeUnion[Serializer, Type[Serializer]], value: Optional[Any] = None) -> int:
-    if value is None:
-        try:
-            return serializer.__bytesize__
-        except AttributeError:
-            pass
-    if not isinstance(serializer, Serializer):
+def isvst(serializer: TypeUnion[Serializer, Type[Serializer]]) -> bool:
+    try:
+        return serializer.__isvst__
+    except AttributeError:
         raise TypeError(f'Expected a Serializer, got {type_name(serializer)}')
-    return serializer._heracles_bytesize_(value)
+
+
+def ishidden(serializer: TypeUnion[Serializer, Type[Serializer]]) -> bool:
+    try:
+        return serializer.__ishidden__
+    except AttributeError:
+        raise TypeError(f'Expected a Serializer, got {type_name(serializer)}')
+
+
+def iswrapper(serializer: TypeUnion[Serializer, Type[Serializer]]) -> bool:
+    try:
+        return serializer.__iswrapper__
+    except AttributeError:
+        raise TypeError(f'Expected a Serializer, got {type_name(serializer)}')
+
+
+def byte_size(serializer: TypeUnion[Serializer, Type[Serializer]], value: Optional[Any] = None) -> int:
+    try:
+        if value is None:
+            return serializer.__bytesize__()
+        else:
+            return serializer.__bytesize__(value)
+    except (TypeError, AttributeError):
+        raise TypeError(f'Expected a Serializer, got {type_name(serializer)}')
