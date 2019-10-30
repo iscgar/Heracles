@@ -14,7 +14,7 @@ class ArrayMetadata(SerializerMetadata):
     def __init__(self, *, array_size: slice, serializer: Serializer):
         self.array_size = array_size
         self.serializer = serializer
-        return super().__init__(array_size.start * byte_size(serializer))
+        super().__init__(array_size.start * byte_size(serializer))
 
 
 class ArrayMeta(SerializerMeta):
@@ -91,7 +91,7 @@ class Array(Serializer, metaclass=ArrayMeta):
         # Simple heuristic to forbid iterators
         if not hasattr(value, '__len__'):
             raise TypeError(f'Expected a sequence, got {type_name(value)}')
-        return super().__init__(value, *args, **kwargs)
+        super().__init__(value, *args, **kwargs)
 
     def __bytesize__(self, value: Optional[TypeUnion['Array', Sequence]] = None) -> int:
         value = self._heracles_validate_(value)
@@ -116,7 +116,7 @@ class Array(Serializer, metaclass=ArrayMeta):
             try:
                 serialized.extend(serializer.serialize_value(v, settings))
             except ValueError as e:
-                raise ValueError(f'Invalid data in index `{i}` of array: {e.message}')
+                raise ValueError(f'Invalid data in index `{i}` of array: {str(e)}')
         remaining_elements = (byte_size(self, value) - len(serialized)) // byte_size(serializer)
         for _ in range(remaining_elements):
             serialized.extend(serializer.serialize())

@@ -13,7 +13,7 @@ __all__ = ['Struct', 'FieldVstError', 'UnknownFieldsError']
 
 class FieldVstError(TypeError):
     def __init__(self, type_name: str, previous_vst: str, new_member: str):
-        return super().__init__(
+        super().__init__(
             f'Field {type_name}.{previous_vst} is variable size and must be the'
             f' last member, but {type_name}.{new_member} was defined after it')
 
@@ -26,7 +26,7 @@ class UnknownFieldsError(ValueError):
             message = f'The following fields are not memebrs of {typ_name}: {field_names}'
         else:
             message = f'The field {field_names} is not a member of {typ_name}'
-        return super().__init__(message)
+        super().__init__(message)
 
 
 class StructMetadata(SerializerMetadata):
@@ -34,7 +34,7 @@ class StructMetadata(SerializerMetadata):
 
     def __init__(self, *, members: collections.OrderedDict):
         self.members = members
-        return super().__init__(sum(map(byte_size, members.values())))
+        super().__init__(sum(map(byte_size, members.values())))
 
 
 class StructMeta(SerializerMeta):
@@ -99,7 +99,7 @@ class StructMeta(SerializerMeta):
     def __getattr__(cls, name: str) -> Any:
         if name in cls:
             return cls.__members__[name]
-        return super().__getattr__(name)
+        raise AttributeError(name)
 
     def __setattr__(cls, name: str, value: Any) -> None:
         member = cls.__members__.get(name)
@@ -116,7 +116,7 @@ class StructMeta(SerializerMeta):
         return member in cls.__members__
 
     def __iter__(cls) -> Iterator:
-        return (k for k in cls.__members__ if not isinstance(k, MetaDict.Hidden))
+        return (k for k in cls.__members__ if not isinstance(k, HiddenSentinal))
 
     def __repr__(cls) -> str:
         return f'<struct {type_name(cls)}>'
@@ -179,7 +179,7 @@ class Struct(Serializer, metaclass=StructMeta):
 
         if not isinstance(value, Struct) and value:
             raise UnknownFieldsError(self, value.keys())
-        return super().__init__(self, *args, *kwargs)
+        super().__init__(self, *args, *kwargs)
 
     def serialize_value(self, value: 'Struct', settings: Dict[str, Any] = None) -> bytes:
         if type(value) != type(self):
@@ -195,7 +195,7 @@ class Struct(Serializer, metaclass=StructMeta):
                         getattr(value, name), settings)
             except ValueError as e:
                 raise ValueError(
-                    f'Invalid data in field `{name}` of `{type_name(self)}`: {e.message}')
+                    f'Invalid data in field `{name}` of `{type_name(self)}`: {str(e)}')
             result.extend(data_piece)
         return bytes(result)
 

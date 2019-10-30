@@ -39,7 +39,7 @@ class ScalarMetadata(SerializerMetadata):
         self.fmt = fmt
         self.fmt_spec = f'{endianness.value}{fmt}'
         self.validator = validator
-        return super().__init__(size)
+        super().__init__(size)
 
 
 class ScalarMeta(SerializerMeta):
@@ -77,7 +77,7 @@ class ScalarMeta(SerializerMeta):
 
 class Scalar(Serializer, metaclass=ScalarMeta):
     def __init__(self, value: TypeUnion[int, float] = 0, *args, **kwargs):
-        return super().__init__(value, *args, validator=chain(
+        super().__init__(value, *args, validator=chain(
             self.__metadata__.validator, kwargs.pop('validator', None)), **kwargs)
 
     def __int__(self) -> int:
@@ -158,7 +158,7 @@ class f64_le(Scalar, endianness=Endianness.little, fmt='d'): pass
 
 class char(Scalar, endianness=Endianness.native, fmt='c'):
     def __init__(self, value: TypeUnion[str, bytes] = '\x00', *args, **kwargs):
-        return super().__init__(value, *args, **kwargs)
+        super().__init__(value, *args, **kwargs)
 
     def serialize_value(self, value: TypeUnion[str, bytes], settings: Optional[Dict[str, Any]] = None) -> bytes:
         if isinstance(value, str):

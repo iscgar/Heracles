@@ -25,7 +25,7 @@ class MetaDict(collections.OrderedDict):
         self.name = name
         self.members = collections.OrderedDict()
         self.onset = onset or (lambda m, k, v: v)
-        return super().__init__()
+        super().__init__()
 
     def __setitem__(self, key: str, value: Any) -> None:
         if key in self.members:
@@ -91,7 +91,7 @@ class SerializerMeta(type):
             if settings is not None:
                 kwargs['settings'] = settings
             return super().__call__(*args, **kwargs)
-        except Exception as e:
+        except Exception:
             if not kwargs and len(args) == 1 and isinstance(args[0], bytes):
                 # TODO: Don't create an unnecessary instance
                 return cls().deserialize(args[0], settings=settings)

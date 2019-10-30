@@ -130,23 +130,13 @@ class metaclassmethod(object):
         raise AttributeError('Cannot delete metaclass method')
 
 
-class classproperty(object):
+class classproperty(classmethod):
     """
     A property that provides a class object to its receiver and can
     be called without an instance.
     """
-
-    def __init__(self, getter):
-        self.getter = getter
-
     def __get__(self, instance, owner=None):
-        if owner is None:
-            if instance is None:
-                raise TypeError(
-                    f"descriptor '{type_name(self)}' for '{type_name(self.getter)}' "
-                     "needs either an object or a type")
-            owner = type(instance)
-        return self.getter.__get__(owner, owner)()
+        return super().__get__(instance, owner)()
 
 
 class strictproperty(property):

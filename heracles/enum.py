@@ -29,11 +29,11 @@ class EnumMetadata(SerializerMetadata):
             for k, v in members.items():
                 serializer._heracles_validate_(v)
         except ValueError as e:
-            raise ValueError(f'Invalid value for literal {v}: {e.message}')
+            raise ValueError(f'Invalid value for literal {v}: {str(e)}')
         self.flags = flags
         self.serializer = serializer
         self.members = members
-        return super().__init__(byte_size(serializer))
+        super().__init__(byte_size(serializer))
 
 
 class EnumMeta(SerializerMeta):
