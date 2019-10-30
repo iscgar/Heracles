@@ -158,7 +158,7 @@ class Array(Serializer, metaclass=ArrayMeta):
         value = self._heracles_validate_(value)
         serializer = type(self).__serializer__
         return f'{serializer}[{type(self)._repr_array_size()}] {repr(self._to_array_repr(value))}'
-    
+
     def _heracles_compare_(self, other: TypeUnion['Array', Sequence], value: Optional[TypeUnion['Array', Sequence]] = None) -> bool:
         if other is None:
             return False

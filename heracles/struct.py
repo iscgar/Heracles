@@ -102,9 +102,9 @@ class StructMeta(SerializerMeta):
         return super().__getattr__(name)
 
     def __setattr__(cls, name: str, value: Any) -> None:
-        serializer = cls.__members__.get(name)
-        if serializer is not None:
-            serializer._heracles_validate_(value)
+        member = cls.__members__.get(name)
+        if member is not None:
+            member.serializer._heracles_validate_(value)
         return super().__setattr__(name, value)
 
     def __delattr__(cls, name: str) -> None:
@@ -160,7 +160,7 @@ class StructMember(object):
 
 class Struct(Serializer, metaclass=StructMeta):
     def __init__(self, value: TypeUnion['Struct', Mapping[str, Serializer]] = {}, *args, **kwargs):
-        # Support constructing from another Struct instance as well as from 
+        # Support constructing from another Struct instance as well as from
         # a dict supplying initial values for some or all of the members
         if not isinstance(value, dict) and type(value) != type(self):
             raise TypeError(f'Cannot construct {type_name(self)} from {type_name(value)}')
@@ -273,6 +273,17 @@ class Struct(Serializer, metaclass=StructMeta):
             value = copy_if_mutable(value.value)
             setattr(self, name, value)
         return value
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        member = type(self).__members__.get(name)
+        if member is not None:
+            member.serializer._heracles_validate_(value)
+        return super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in self.__members__:
+            raise AttributeError(f'{type_name(self)}: cannot delete Struct member')
+        return super().__delattr__(name)
 
     def __contains__(self, member: str) -> bool:
         return member in type(self)

@@ -190,7 +190,7 @@ class Serializer(metaclass=SerializerMeta):
 
     def __getitem__(self, size: TypeUnion[int, slice]):
         return type(self).create_array(size, self)
-    
+
     def __setattr__(self, name: str, value: Any):
         type(self)._validate_setattr(self, name)
         return super().__setattr__(name, value)
