@@ -79,7 +79,7 @@ class BitSizeValidator(IntRangeValidator):
     def __init__(self, max_bit_size: int):
         if max_bit_size <= 0:
             raise ValueError(f'Expected a positive value for max bit size, got {max_bit_size}')
-        super().__init__(0, 1 << max_bit_size)
+        return super().__init__(0, 1 << max_bit_size)
 
 
 class SetValidator(Validator):

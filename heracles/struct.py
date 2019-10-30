@@ -5,7 +5,7 @@ import collections
 from typing import Any, ByteString, Dict, Iterator, Mapping, Optional, Sequence, Type, Union as TypeUnion
 
 from .base import Serializer, SerializerMeta, SerializerMetadata, MetaDict, HiddenSentinal, byte_size, isvst, ishidden, iswrapper
-from ._utils import last, type_name, is_type, as_type, get_as_value, copy_if_mutable, is_strict_subclass, is_classdef_in_classdict
+from ._utils import last, type_name, is_type, as_type, get_as_value, copy_if_mutable, is_strict_subclass, is_classdef_in_classdict, strictproperty
 
 
 __all__ = ['Struct', 'FieldVstError', 'UnknownFieldsError']
@@ -13,7 +13,7 @@ __all__ = ['Struct', 'FieldVstError', 'UnknownFieldsError']
 
 class FieldVstError(TypeError):
     def __init__(self, type_name: str, previous_vst: str, new_member: str):
-        super().__init__(
+        return super().__init__(
             f'Field {type_name}.{previous_vst} is variable size and must be the'
             f' last member, but {type_name}.{new_member} was defined after it')
 
@@ -26,28 +26,29 @@ class UnknownFieldsError(ValueError):
             message = f'The following fields are not memebrs of {typ_name}: {field_names}'
         else:
             message = f'The field {field_names} is not a member of {typ_name}'
-        super().__init__(message)
+        return super().__init__(message)
 
 
 class StructMetadata(SerializerMetadata):
     __slots__ = ('members',)
 
     def __init__(self, *, members: collections.OrderedDict):
-        size = sum(map(byte_size, members.values()))
-        super().__init__(size)
         self.members = members
+        return super().__init__(sum(map(byte_size, members.values())))
 
 
 class StructMeta(SerializerMeta):
     def __new__(cls, name: str, bases: Sequence, classdict: MetaDict) -> 'Struct':
+        if not hasattr(sys.modules[__name__], 'Struct'):
+            # Don't create metadata for Struct itself
+            return super().__new__(cls, name, bases, dict(classdict))
+
         # Make sure that our only serializer bases are structs
-        for base in (b for b in bases if is_strict_subclass(b, Serializer)):
+        for base in (b for b in bases if issubclass(b, Serializer)):
             if base is not Struct:
                 raise TypeError('structs can only inherit from Struct')
-        classdict[SerializerMeta.METAATTR] = StructMetadata(
-            members=types.MappingProxyType(classdict.members))
-
-        new_type = super().__new__(cls, name, bases, dict(classdict))
+        new_type = super().__new__(cls, name, bases, dict(classdict), metadata=StructMetadata(
+            members=types.MappingProxyType(classdict.members)))
         # Set the owner type for the new type's members
         for member in new_type.__members__.values():
             member.owner = new_type
@@ -84,14 +85,14 @@ class StructMeta(SerializerMeta):
         mapping.serializers_cache = {}
         return mapping
 
-    @property
+    @strictproperty
     def __isvst__(cls) -> bool:
         try:
             return isvst(last(cls.__members__.values()))
         except StopIteration:
             return False
 
-    @property
+    @strictproperty
     def __members__(cls):
         return cls.__metadata__.members
 
@@ -104,12 +105,12 @@ class StructMeta(SerializerMeta):
         serializer = cls.__members__.get(name)
         if serializer is not None:
             serializer._heracles_validate_(value)
-        super().__setattr__(name, value)
+        return super().__setattr__(name, value)
 
     def __delattr__(cls, name: str) -> None:
         if name in cls.__members__:
             raise AttributeError(f'{type_name(cls)}: cannot delete Struct member')
-        super().__delattr__(name)
+        return super().__delattr__(name)
 
     def __contains__(cls, member) -> bool:
         return member in cls.__members__
@@ -128,22 +129,22 @@ class StructMember(object):
         self.name = name
         self.serializer = serializer
 
-    @property
+    @strictproperty
     def __isvst__(self) -> bool:
         return isvst(self.serializer)
 
-    @property
+    @strictproperty
     def __ishidden__(self) -> bool:
         return ishidden(self.serializer)
 
-    @property
+    @strictproperty
     def __iswrapper__(self) -> bool:
         return iswrapper(self.serializer)
 
     def __bytesize__(self, value: Optional[Any] = None) -> int:
         return byte_size(self.serializer, value)
 
-    @property
+    @strictproperty
     def offset(self) -> int:
         return sum(map(byte_size, itertools.takewhile(
             lambda m: m is not self, self.owner.__members__.values())))
@@ -151,7 +152,7 @@ class StructMember(object):
     def __setattr__(self, name, value):
         if name not in self.__slots__ or hasattr(self, name):
             raise AttributeError(f'`{type_name(self)}` object does not support attribute setting')
-        super().__setattr__(name, value)
+        return super().__setattr__(name, value)
 
     def __repr__(self) -> str:
         return f'<{type_name(self.owner)}.{self.name}: {self.serializer}>'
@@ -178,7 +179,7 @@ class Struct(Serializer, metaclass=StructMeta):
 
         if not isinstance(value, Struct) and value:
             raise UnknownFieldsError(self, value.keys())
-        super().__init__(self, *args, *kwargs)
+        return super().__init__(self, *args, *kwargs)
 
     def serialize_value(self, value: 'Struct', settings: Dict[str, Any] = None) -> bytes:
         if type(value) != type(self):

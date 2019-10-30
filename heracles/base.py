@@ -2,7 +2,7 @@ import enum
 import collections
 from typing import Any, ByteString, Callable, Dict, Iterator, KeysView, Optional, Type, Union as TypeUnion
 
-from ._utils import value_or_default, type_name, is_type, as_type, as_iter, metaclassmethod
+from ._utils import value_or_default, type_name, is_type, as_type, as_iter, metaclassmethod, strictproperty, StrictPropertyError
 
 
 __all__ = ['Endianness', 'Serializer', 'byte_size']
@@ -25,14 +25,14 @@ class MetaDict(collections.OrderedDict):
         self.name = name
         self.members = collections.OrderedDict()
         self.onset = onset or (lambda m, k, v: v)
-        super().__init__()
+        return super().__init__()
 
     def __setitem__(self, key: str, value: Any) -> None:
         if key in self.members:
             raise KeyError(f'`{key}` overrides an existing member of {self.name}')
         result = self.onset(self, key, value)
         if result is not self.ignore:
-            super().__setitem__(key, value)
+            return super().__setitem__(key, value)
 
 
 class SerializerMetadata(object):
@@ -41,24 +41,23 @@ class SerializerMetadata(object):
     def __init__(self, byte_size: int):
         self.byte_size = byte_size
 
-    def __setattr__(self, key: str, value: Any):
-        if hasattr(self, key):
-            raise AttributeError(f'Cannot reassign {key}')
-        super().__setattr__(key, value)
-    
-    def __getitem__(self, key: str) -> Any:
-        try:
-            return getattr(self, key)
-        except AttributeError as e:
-            raise KeyError(e.message)
+    def __setattr__(self, name: str, value: Any):
+        if hasattr(self, name):
+            raise AttributeError(f'Cannot reassign {name}')
+        return super().__setattr__(name, value)
 
     def __iter__(self) -> Iterator:
         return (k for k in dir(self) if not k.startswith('_'))
 
 
 class SerializerMeta(type):
-    METAATTR = '__heracles_metadata'
-    RESERVED_ATTRS = ('__metadata__', '__bytesize__', '__ishidden__', '__isvst__', '__iswrapper__', METAATTR)
+    METAATTR = '_heracles_metadata'
+    RESERVED_ATTRS = ('__metadata__', '__bytesize__', '__ishidden__', '__isvst__', '__iswrapper__')
+
+    def __new__(cls, name, bases, classdict, *, metadata: Optional[SerializerMetadata] = None, **kwargs):
+        if metadata is not None:
+            classdict[cls.METAATTR] = metadata
+        return super().__new__(cls, name, bases, classdict, **kwargs)
 
     @staticmethod
     def create_array(size: TypeUnion[int, slice], underlying: Type['Serializer']):
@@ -66,24 +65,24 @@ class SerializerMeta(type):
         if not isinstance(size, (int, slice)):
             raise ValueError(f'Expected an int or a slice, got {type_name(size)}')
         return Array[size, underlying]
-    
-    @property
+
+    @strictproperty
     def __metadata__(cls) -> SerializerMetadata:
-        return getattr(cls, SerializerMeta.METAATTR)
+        return super().__getattribute__(SerializerMeta.METAATTR)
 
     @metaclassmethod
     def __bytesize__(cls) -> int:
         return cls.__metadata__.byte_size
 
-    @property
+    @strictproperty
     def __isvst__(cls) -> bool:
         return False
 
-    @property
+    @strictproperty
     def __ishidden__(cls) -> bool:
         return False
 
-    @property
+    @strictproperty
     def __iswrapper__(cls) -> bool:
         return False
 
@@ -105,7 +104,7 @@ class SerializerMeta(type):
     def _validate_setattr(obj, name: str):
         if name.startswith('_heracles') and hasattr(obj, name):
             raise AttributeError(f'{type_name(obj)}: Cannot reassign heracles attribute `{name}`')
-        elif name in Serializer.RESERVED_ATTRS:
+        elif name in SerializerMeta.RESERVED_ATTRS:
             raise AttributeError(
                 f'{type_name(obj)}: `{name}` is reserved for the heracles implementation')
 
@@ -116,31 +115,30 @@ class SerializerMeta(type):
 
 class Serializer(metaclass=SerializerMeta):
     def __new__(cls, *args, **kwargs):
-        # Make sure we have metadata
         try:
             assert isinstance(cls.__metadata__, SerializerMetadata)
-        except (AttributeError, AssertionError):
-            raise TypeError('Cannot instantiate an abstarct Serializer class')
+        except (AttributeError, AssertionError, StrictPropertyError):
+            raise TypeError(f'Cannot instanctiate abstract class {type_name(cls)}')
         return super().__new__(cls)
-        
+
     def __init__(self, value: Any, *, validator: Optional[Callable[[Any], None]] = None):
         self._heracles_validator = tuple(as_iter(validator))
         self._heracles_value = value
         self._heracles_validate_(value)
 
-    @property
+    @strictproperty
     def __metadata__(self) -> SerializerMetadata:
         return type(self).__metadata__
 
-    @property
+    @strictproperty
     def __isvst__(self) -> bool:
         return type(self).__isvst__
 
-    @property
+    @strictproperty
     def __ishidden__(self) -> bool:
         return type(self).__ishidden__
 
-    @property
+    @strictproperty
     def __iswrapper__(self) -> bool:
         return type(self).__iswrapper__
 
@@ -174,7 +172,7 @@ class Serializer(metaclass=SerializerMeta):
     def _heracles_compare_(self, other: Any, value: Optional[Any] = None) -> bool:
         return self._heracles_validate_(value) == self._heracles_validate_(other)
 
-    @property
+    @strictproperty
     def value(self) -> Any:
         return self._heracles_value
 

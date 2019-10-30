@@ -110,6 +110,10 @@ def copy_if_mutable(value: Any) -> Any:
     return copy.deepcopy(value) if not is_immutable(value) else value
 
 
+class StrictPropertyError(BaseException):
+    pass
+
+
 class metaclassmethod(object):
     def __init__(self, func):
         self.func = func
@@ -127,14 +131,50 @@ class metaclassmethod(object):
 
 
 class classproperty(object):
-    def __init__(self, func):
-        self.func = func
+    """
+    A property that provides a class object to its receiver and can
+    be called without an instance.
+    """
+
+    def __init__(self, getter):
+        self.getter = getter
 
     def __get__(self, instance, owner=None):
         if owner is None:
             if instance is None:
                 raise TypeError(
-                    f"descriptor '{type_name(self)}' for '{type_name(self.func)}' "
+                    f"descriptor '{type_name(self)}' for '{type_name(self.getter)}' "
                      "needs either an object or a type")
             owner = type(instance)
-        return self.func.__get__(owner, owner)()
+        return self.getter.__get__(owner, owner)()
+
+
+class strictproperty(property):
+    """
+    A property that prevents calling user ovrridden getter methods
+    when a property call chain raises AttributeError by raising a
+    StrictPropertyError instead.
+    """
+
+    def __init__(self, getter):
+        super().__init__(getter)
+
+    def __get__(self, instance, owner=None):
+        try:
+            return super().__get__(instance, owner)
+        except AttributeError as e:
+            raise StrictPropertyError(e) from e
+
+
+class strictclassproperty(classproperty):
+    """
+    A classproperty that prevents calling user ovrridden getter methods
+    when a property call chain raises AttributeError by raising a
+    StrictPropertyError instead.
+    """
+
+    def __get__(self, instance, owner=None):
+        try:
+            return super().__get__(instance, owner)
+        except AttributeError as e:
+            raise StrictPropertyError() from e

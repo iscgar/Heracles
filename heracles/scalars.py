@@ -4,7 +4,7 @@ from typing import Any, ByteString, Dict, Mapping, Optional, Sequence, Union as 
 
 from .base import Endianness, Serializer, SerializerMeta, SerializerMetadata
 from .validators import IntRangeValidator, FloatValidator, AsciiCharValidator
-from ._utils import chain, type_name, is_strict_subclass, func_params, ParameterKind, classproperty
+from ._utils import chain, type_name, is_strict_subclass, func_params, ParameterKind, strictclassproperty, strictproperty
 
 __all__ = [
     'Scalar', 'PadByte', 'char', 'u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'f32', 'f64',
@@ -35,11 +35,11 @@ class ScalarMetadata(SerializerMetadata):
         if not fmt in self._FORMATTERS_INFO:
             raise ValueError(f'Unsupported scalar format: {fmt}')
         size, validator = self._FORMATTERS_INFO[fmt]
-        super().__init__(size)
         self.endianness = endianness
         self.fmt = fmt
         self.fmt_spec = f'{endianness.value}{fmt}'
         self.validator = validator
+        return super().__init__(size)
 
 
 class ScalarMeta(SerializerMeta):
@@ -47,34 +47,37 @@ class ScalarMeta(SerializerMeta):
         p.name for p in func_params(ScalarMetadata.__init__, ParameterKind.KEYWORD_ONLY))
 
     def __new__(cls, name: str, bases: Sequence, classdict: Mapping[str, Any], **kwargs):
-        if hasattr(sys.modules[__name__], 'Scalar'):
-            args = {}
-            # Look for required arguments in base classes
-            for b in (b for b in bases if is_strict_subclass(b, Serializer)):
-                if not issubclass(b, Scalar):
-                    raise TypeError('Cannot inherit from non-Scalar serializer')
-                elif b is Scalar:
-                    continue # Scalar itself has no metadata
-                if args:
-                    raise TypeError('Cannot inherit from more than one Scalar base')
-                meta = b.__metadata__
-                for arg in cls._SCALAR_ARGS:
-                    args[arg] = getattr(meta, arg)
-            # Override with keyword arguments, if any
-            for k in cls._SCALAR_ARGS:
-                if k in kwargs:
-                    args[k] = kwargs.pop(k)
-            classdict[SerializerMeta.METAATTR] = ScalarMetadata(**args)
-        return super().__new__(cls, name, bases, classdict, **kwargs)
+        if not hasattr(sys.modules[__name__], 'Scalar'):
+            # Don't create metadata for Scalar itself
+            return super().__new__(cls, name, bases, classdict, **kwargs)
 
-    @property
+        args = {}
+        # Look for required arguments in base classes
+        for b in (b for b in bases if issubclass(b, Serializer)):
+            if not issubclass(b, Scalar):
+                raise TypeError('Cannot inherit from non-Scalar serializer')
+            elif b is Scalar:
+                continue # Scalar itself has no metadata
+            if args:
+                raise TypeError('Cannot inherit from more than one Scalar base')
+            meta = b.__metadata__
+            for arg in cls._SCALAR_ARGS:
+                args[arg] = getattr(meta, arg)
+        # Override with keyword arguments, if any
+        for k in cls._SCALAR_ARGS:
+            if k in kwargs:
+                args[k] = kwargs.pop(k)
+        return super().__new__(
+            cls, name, bases, classdict, metadata=ScalarMetadata(**args), **kwargs)
+
+    @strictproperty
     def __iswrapper__(cls) -> bool:
         return True
 
 
 class Scalar(Serializer, metaclass=ScalarMeta):
     def __init__(self, value: TypeUnion[int, float] = 0, *args, **kwargs):
-        super().__init__(value, *args, validator=chain(
+        return super().__init__(value, *args, validator=chain(
             self.__metadata__.validator, kwargs.pop('validator', None)), **kwargs)
 
     def __int__(self) -> int:
@@ -155,7 +158,7 @@ class f64_le(Scalar, endianness=Endianness.little, fmt='d'): pass
 
 class char(Scalar, endianness=Endianness.native, fmt='c'):
     def __init__(self, value: TypeUnion[str, bytes] = '\x00', *args, **kwargs):
-        super().__init__(value, *args, **kwargs)
+        return super().__init__(value, *args, **kwargs)
 
     def serialize_value(self, value: TypeUnion[str, bytes], settings: Optional[Dict[str, Any]] = None) -> bytes:
         if isinstance(value, str):
@@ -173,7 +176,7 @@ class char(Scalar, endianness=Endianness.native, fmt='c'):
 
 
 class PadByte(u8):
-    @classproperty
+    @strictclassproperty
     def __ishidden__(cls) -> bool:
         return True
 

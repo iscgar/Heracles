@@ -3,7 +3,7 @@ import itertools
 from typing import Any, Dict, ByteString, Iterable, Iterator, Optional, Sequence, Type, Union as TypeUnion
 
 from .base import Serializer, SerializerMeta, SerializerMetadata, byte_size, ishidden, isvst
-from ._utils import copy_if_mutable, type_name, as_type, get_as_value, iter_chunks
+from ._utils import copy_if_mutable, type_name, as_type, get_as_value, iter_chunks, strictproperty
 
 __all__ = ['Array']
 
@@ -12,9 +12,9 @@ class ArrayMetadata(SerializerMetadata):
     __slots__ = ('array_size', 'serializer')
 
     def __init__(self, *, array_size: slice, serializer: Serializer):
-        super().__init__(array_size.start * byte_size(serializer))
         self.array_size = array_size
         self.serializer = serializer
+        return super().__init__(array_size.start * byte_size(serializer))
 
 
 class ArrayMeta(SerializerMeta):
@@ -50,10 +50,8 @@ class ArrayMeta(SerializerMeta):
         elif ishidden(serializer) and size.start != size.stop:
             raise ValueError(f'Array of {type_name(serializer)} cannot be variable size')
 
-        return type(type_name(cls), (cls,), {
-            SerializerMeta.METAATTR: ArrayMetadata(
-                array_size=size, serializer=get_as_value(serializer))
-        })
+        return type(cls)(type_name(cls), (cls,), {}, metadata=ArrayMetadata(
+                array_size=size, serializer=get_as_value(serializer)))
 
     def _repr_array_size(cls) -> str:
         size = array_size(cls)
@@ -66,23 +64,23 @@ class ArrayMeta(SerializerMeta):
     def __repr__(cls) -> str:
         return f'<array <{cls.__serializer__}> [{cls._repr_array_size()}]>'
 
-    @property
+    @strictproperty
     def __serializer__(cls) -> slice:
         return cls.__metadata__.serializer
 
-    @property
+    @strictproperty
     def __arraysize__(cls) -> slice:
         return cls.__metadata__.array_size
 
-    @property
+    @strictproperty
     def __iswrapper__(cls):
         return True
 
-    @property
+    @strictproperty
     def __ishidden__(cls) -> bool:
         return ishidden(cls.__serializer__)
 
-    @property
+    @strictproperty
     def __isvst__(cls) -> bool:
         size = array_size(cls)
         return size.start != size.stop
